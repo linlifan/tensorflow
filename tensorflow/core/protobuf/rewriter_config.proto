@@ -66,7 +66,13 @@ message RewriterConfig {
   Toggle constant_folding = 3;
   // Shape optimizations (default is ON)
   // Simplify computations made on shapes.
+  
   Toggle shape_optimization = 13;
+  
+  Toggle sparse_embedding_optimization = 1000;
+  Toggle categorical_column_with_hash_bucket_optimization = 1001;
+  Toggle bucketize_optimization = 1002;
+
   // Remapping (default is ON)
   // Remap subgraphs onto more efficient implementations.
   Toggle remapping = 14;

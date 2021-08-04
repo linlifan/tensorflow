@@ -45,6 +45,9 @@ limitations under the License.
 #include "tensorflow/core/grappler/optimizers/remapper.h"
 #include "tensorflow/core/grappler/optimizers/scoped_allocator_optimizer.h"
 #include "tensorflow/core/grappler/optimizers/shape_optimizer.h"
+#include "tensorflow/core/grappler/optimizers/sparse_embedding_optimizer.h"
+#include "tensorflow/core/grappler/optimizers/categorical_column_with_hash_bucket_optimizer.h"
+#include "tensorflow/core/grappler/optimizers/bucketize_optimizer.h"
 #include "tensorflow/core/grappler/utils/canonicalizer.h"
 #include "tensorflow/core/grappler/utils/colocation.h"
 #include "tensorflow/core/grappler/utils/functions.h"
@@ -198,8 +201,11 @@ bool MetaOptimizer::LowerControlFlow() const {
 
 std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
     const string& optimizer, const std::set<string>& device_types) const {
+  
+     
   ConfigList plugin_configs = PluginGraphOptimizerRegistry::GetPluginConfigs(
-      cfg_.use_plugin_optimizers() != RewriterConfig::OFF, device_types);
+     cfg_.use_plugin_optimizers() != RewriterConfig::OFF, device_types);
+  
   if (optimizer == "pruning" && !plugin_configs.disable_model_pruning)
     return std::unique_ptr<GraphOptimizer>(new ModelPruner());
   MK_OPT("function", "function_optimization",
@@ -211,6 +217,12 @@ std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
              cfg_.experimental_disable_compressed_tensor_optimization(),
              !cfg_.experimental_disable_folding_quantization_emulation()));
   MK_OPT("shape", "shape_optimization", new ShapeOptimizer());
+  
+  MK_OPT("categorical_column_with_hash_bucket", "categorical_column_with_hash_bucket", new CategoricalColumnWithHashBucketOptimizer());
+  MK_OPT("sparse_embedding", "sparse_embedding", new SparseEmbeddingOptimizer());
+  MK_OPT("fuse_bucketize", "fuse_bucketize", new BucketizeOptimizer());
+ 
+
   MK_OPT("remap", "remapping",
          new Remapper(cfg_.remapping(), xla_auto_clustering_on_));
   MK_OPT("layout", "layout_optimizer",
@@ -333,6 +345,20 @@ Status MetaOptimizer::InitializeOptimizers(
         /*optimization level*/ cfg_.layout_optimizer(),
         /*CPU layout conversion*/ cfg_.cpu_layout_conversion()));
   }
+
+
+  if (BOTH_NOT_OFF(sparse_embedding_optimization)) {
+    optimizers->push_back(MakeUnique<SparseEmbeddingOptimizer>());
+  }
+  if (BOTH_NOT_OFF(categorical_column_with_hash_bucket_optimization)) {
+     optimizers->push_back(MakeUnique<CategoricalColumnWithHashBucketOptimizer>());
+  } 
+  
+  if (BOTH_NOT_OFF(bucketize_optimization)) {
+     optimizers->push_back(MakeUnique<BucketizeOptimizer>());
+  }
+
+
   if (BOTH_NOT_OFF(remapping)) {
     optimizers->push_back(
         MakeUnique<Remapper>(cfg_.remapping(), xla_auto_clustering_on_));
@@ -1153,7 +1179,10 @@ bool MetaOptimizerEnabled(const ConfigProto& cfg) {
          rewrite_cfg.function_optimization() != RewriterConfig::OFF ||
          rewrite_cfg.constant_folding() != RewriterConfig::OFF ||
          rewrite_cfg.shape_optimization() != RewriterConfig::OFF ||
-         rewrite_cfg.remapping() != RewriterConfig::OFF ||
+         rewrite_cfg.sparse_embedding_optimization() != RewriterConfig::OFF ||
+         rewrite_cfg.categorical_column_with_hash_bucket_optimization() != RewriterConfig::OFF ||
+         rewrite_cfg.bucketize_optimization() != RewriterConfig::OFF ||
+	 rewrite_cfg.remapping() != RewriterConfig::OFF ||
          rewrite_cfg.common_subgraph_elimination() != RewriterConfig::OFF ||
          rewrite_cfg.arithmetic_optimization() != RewriterConfig::OFF ||
          rewrite_cfg.loop_optimization() != RewriterConfig::OFF ||
