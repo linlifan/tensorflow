@@ -964,6 +964,11 @@ cc_library(
         ":one_hot_op",
         ":pack_op",
         ":pad_op",
+        ":sparse_embedding_with_shape_op",
+        ":sparse_embedding_with_shape_training_op",
+        ":unsorted_segment_sum_fused_op",
+        ":categorical_column_with_hash_bucket_op",
+        ":fuse_bucketize_op",
         ":quantize_and_dequantize_op",
         ":reshape_op",
         ":reverse_op",
@@ -1108,6 +1113,56 @@ tf_kernel_library(
     name = "pad_op",
     prefix = "pad_op",
     deps = ARRAY_DEPS,
+)
+
+tf_kernel_library(
+    name = "sparse_embedding_with_shape_op",
+    visibility = ["//visibility:public"],
+    srcs = [
+        "sparse_embedding.cpp",
+    ],
+
+    deps = ARRAY_DEPS + [":resource_variable_ops", ":variable_ops"],
+)
+
+tf_kernel_library(
+    name = "sparse_embedding_with_shape_training_op",
+    visibility = ["//visibility:public"],
+    srcs = [
+        "sparse_embedding_training.cpp",
+    ],
+
+    deps = ARRAY_DEPS + [":resource_variable_ops", ":variable_ops"],
+)
+
+tf_kernel_library(
+    name = "unsorted_segment_sum_fused_op",
+    visibility = ["//visibility:public"],
+    srcs = [
+        "unsorted_segment_sum_fused.cpp",
+    ],
+
+    deps = ARRAY_DEPS + [":resource_variable_ops", ":variable_ops"],
+)
+
+tf_kernel_library(
+    name = "categorical_column_with_hash_bucket_op",
+    visibility = ["//visibility:public"],
+    srcs = [
+        "categorical_column_with_hash_bucket.cpp",
+    ],
+
+    deps = ARRAY_DEPS + [":resource_variable_ops", ":variable_ops"],
+)
+
+tf_kernel_library(
+    name = "fuse_bucketize_op",
+    visibility = ["//visibility:public"],
+    srcs = [
+        "fuse_bucketize_op.cc",
+    ],
+
+    deps = ARRAY_DEPS + [":resource_variable_ops", ":variable_ops"],
 )
 
 tf_kernel_library(

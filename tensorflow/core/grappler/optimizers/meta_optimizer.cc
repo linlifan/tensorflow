@@ -45,6 +45,9 @@ limitations under the License.
 #include "tensorflow/core/grappler/optimizers/remapper.h"
 #include "tensorflow/core/grappler/optimizers/scoped_allocator_optimizer.h"
 #include "tensorflow/core/grappler/optimizers/shape_optimizer.h"
+#include "tensorflow/core/grappler/optimizers/sparse_embedding_optimizer.h"
+#include "tensorflow/core/grappler/optimizers/categorical_column_with_hash_bucket_optimizer.h"
+#include "tensorflow/core/grappler/optimizers/bucketize_optimizer.h"
 #include "tensorflow/core/grappler/utils/canonicalizer.h"
 #include "tensorflow/core/grappler/utils/colocation.h"
 #include "tensorflow/core/grappler/utils/functions.h"
@@ -176,7 +179,11 @@ bool MetaOptimizer::IsSingleThreadedExecutor() const {
 }
 
 std::unique_ptr<GraphOptimizer> MetaOptimizer::MakeNewOptimizer(
-    const string& optimizer) const {
+    const string& optimizer) const { 
+  MK_OPT("categorical_column_with_hash_bucket", new CategoricalColumnWithHashBucketOptimizer());
+  MK_OPT("sparse_embedding", new SparseEmbeddingOptimizer());
+  MK_OPT("fuse_bucketize", new BucketizeOptimizer());
+ 
   MK_OPT("pruning", new ModelPruner());
   MK_OPT("function", new FunctionOptimizer(
                          cfg_.function_optimization(),
@@ -273,6 +280,19 @@ Status MetaOptimizer::InitializeOptimizers(
         /*optimization level*/ cfg_.layout_optimizer(),
         /*CPU layout conversion*/ cfg_.cpu_layout_conversion()));
   }
+
+  if (cfg_.sparse_embedding_optimization() != RewriterConfig::OFF) {
+    optimizers->push_back(MakeUnique<SparseEmbeddingOptimizer>());
+  }
+  if (cfg_.categorical_column_with_hash_bucket_optimization() != RewriterConfig::OFF) {
+     optimizers->push_back(MakeUnique<CategoricalColumnWithHashBucketOptimizer>());
+  } 
+  
+  if (cfg_.bucketize_optimization() != RewriterConfig::OFF) {
+     optimizers->push_back(MakeUnique<BucketizeOptimizer>());
+  }
+
+
   if (cfg_.remapping() != RewriterConfig::OFF) {
     optimizers->push_back(MakeUnique<Remapper>(cfg_.remapping()));
   }
