@@ -238,7 +238,10 @@ Status BucketizeOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
               if ( input_node->op() == "Reshape" )
               { 
                   NodeDef* bucketize_node = match_bucketize_node(node_mapping, input_node_name);
-                  bucketize_nodes.push_back(bucketize_node);   
+                  if (bucketize_node != nullptr)
+		  {
+		      bucketize_nodes.push_back(bucketize_node);   
+		  }
               }
               else if (input_node->op() == "Const")
               {
