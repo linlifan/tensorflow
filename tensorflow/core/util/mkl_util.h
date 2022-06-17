@@ -666,9 +666,10 @@ inline Status ConvertMklToTF(OpKernelContext* context,
     }
     return Status::OK();
   } catch (mkldnn::error& e) {
-    string error_msg = "Status: " + std::to_string(e.status) +
-                       ", message: " + string(e.message) + ", in file " +
-                       string(__FILE__) + ":" + std::to_string(__LINE__);
+   string error_msg = "Status: " + std::to_string(e.status) + ", message: " +
+                       string(e.message) + ", in file " + string(__FILE__) +
+                       ":" + std::to_string(__LINE__);
+ 
     LOG(FATAL) << "Operation received an exception: " << error_msg;
   }
 }
@@ -792,6 +793,37 @@ inline void AllocTmpBuffer(OpKernelContext* context, Tensor* tensor_out,
   OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<T>::v(),
                                                  tf_shape, tensor_out));
 }
+
+template <typename T>
+struct UserScratchPad {
+  template <typename MklPrim>
+  // NOTE: if scratchpad is not required for a particular primitive the
+  //      spad_md.get_size() will return 0. It is fine to return
+  //      nullptr in this case
+  inline void AllocateSPTensor(MklPrim* mkl_prim, OpKernelContext* context) {
+    allocated_ = false;
+    auto spad_md = mkl_prim->GetScratchPadDesc();
+    size_t spad_size = spad_md.get_size();
+    if (spad_size == 0) return;
+
+    size_t allocate_size = (spad_size + sizeof(T) - 1) / sizeof(T);
+    TensorShape tf_shape;
+    tf_shape.AddDim(allocate_size);
+    AllocTmpBuffer<T>(context, &scratch_pad_, tf_shape);
+    allocated_ = true;
+  }
+  inline void* Get() {
+    if (allocated_) {
+      return static_cast<void*>(scratch_pad_.flat<T>().data());
+    } else {
+      return nullptr;
+    }
+  }
+ private:
+  Tensor scratch_pad_;
+  bool allocated_ = false;
+};
+
 
 inline void GetStridesFromSizes(MklTensorFormat data_format, size_t* strides,
                                 const size_t* sizes) {
@@ -1216,8 +1248,8 @@ inline Status CreateBlockedMemDescHelper(const memory::dims& dim,
     delete[] input_strides;
     return Status(error::Code::INTERNAL,
                   tensorflow::strings::StrCat(
-                      "Failed to create blocked memory descriptor.",
-                      "Status: ", e.status, ", message: ", e.message));
+                      "Failed to create blocked memory descriptor.", "Status: ",
+                      e.status, ", message: ", e.message));
   }
   return Status::OK();
 }
