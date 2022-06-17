@@ -15,6 +15,7 @@ load(
     "tf_cuda_library",
     "tf_cuda_only_cc_test",
     "tf_kernel_library",
+    "tf_mkl_kernel_library",
 )
 
 # buildifier: disable=same-origin-load
@@ -162,7 +163,8 @@ filegroup(
         "mirror_pad_mode.h",
         "mkl_threadpool.h",
         "mkl_util.h",
-        "overflow.h",
+        "onednn_env_vars.h",
+	"overflow.h",
         "padding.h",
         "permutation_input_iterator.h",
         "permutation_output_iterator.h",
@@ -291,6 +293,7 @@ filegroup(
     srcs = [
         "mkl_threadpool.h",
         "mkl_util.h",
+	"onednn_env_vars.h",
     ],
     visibility = ["//tensorflow/core:__pkg__"],
 )
@@ -382,6 +385,20 @@ cc_library(
     copts = tf_copts(),
     visibility = [
         "//tensorflow:internal",
+    ],
+)
+
+
+tf_mkl_kernel_library(
+    name = "onednn_env_vars",
+    srcs = ["onednn_env_vars.cc"],
+    hdrs = ["onednn_env_vars.h"],
+    deps = [
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:lib_internal",
+        "//tensorflow/core/framework:bounds_check",
+        "//tensorflow/core/kernels:ops_util",
     ],
 )
 

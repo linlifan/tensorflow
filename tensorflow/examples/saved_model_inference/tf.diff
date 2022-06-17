@@ -1,0 +1,16 @@
+diff --git a/tensorflow/core/profiler/rpc/client/BUILD b/tensorflow/core/profiler/rpc/client/BUILD
+index c3e9cfab93e..48b213d66de 100644
+--- a/tensorflow/core/profiler/rpc/client/BUILD
++++ b/tensorflow/core/profiler/rpc/client/BUILD
+@@ -23,8 +23,9 @@ cc_library(
+     hdrs = ["capture_profile.h"],
+     copts = tf_profiler_copts(),
+     visibility = [
+-        "//tensorflow/compiler/xla/python:__pkg__",
+-        "//tensorflow/python/profiler/internal:__pkg__",
++        #"//tensorflow/compiler/xla/python:__pkg__",
++        #"//tensorflow/python/profiler/internal:__pkg__",
++        "//visibility:public",
+     ],
+     deps = [
+         ":profiler_client_for_pybind",

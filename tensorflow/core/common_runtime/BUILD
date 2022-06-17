@@ -1030,6 +1030,7 @@ cc_library(
         ":bfc_allocator",
         ":pool_allocator",
         "//tensorflow/core:lib",
+	"//tensorflow/core/util:onednn_env_vars",
     ],
 )
 
