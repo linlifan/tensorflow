@@ -35,18 +35,26 @@ using mkldnn::stream;
 
 namespace tensorflow {
 
-#define L1_SIZE 32 * 1024
-typedef Eigen::ThreadPoolDevice CPUDevice;
 
-inline bool ExecuteSingleThreadedGemm(int m, int n, int k) {
+
+static Eigen::internal::CacheSizes cache_sizes = Eigen::internal::CacheSizes();
+
+typedef Eigen::ThreadPoolDevice CPUDevice;
+inline bool ExecuteSingleThreadedGemm(int m, int n, int k, int bytes) {
   // Ideally we would like to determine blocking and then come up with
   // a heuristic but what we are targeting are very small models whose
-  // total size is < few L1's. So we will do this simple calculation
+  // total size is < x*L2. So we will do this simple calculation
   // to determine if the matrix multiplication should be run on a single thread.
-  constexpr int kHeuristicMultiplier = 8;
-  return ((sizeof(float) * (m * n + k * (m + n))) <
-          L1_SIZE * kHeuristicMultiplier);
+  // TODO(Intel-tf): this needs to be vastly improved, perhaps at a lower level
+  // than the integration.
+  ptrdiff_t l2_size = cache_sizes.m_l2;
+  constexpr float kHeuristicMultiplier = 1.01;
+  const float mul_size = bytes * (m * n + k * (m + n));
+  const float l2_heur = l2_size * kHeuristicMultiplier;
+  return mul_size < l2_heur;
 }
+
+
 
 // This structure aggregates multiple inputs to MklDnnMatMul* methods.
 struct MklDnnMatMulFwdParams {
@@ -217,7 +225,8 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     // Check if there is any fusion as post-ops
     auto const& post_op_params = matmul_fwd_params.post_op_params;
     mkldnn::primitive_attr post_ops_attr;
-    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    //post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::library);
     mkldnn::post_ops post_ops;
     if (!post_op_params.empty()) {
       for (auto const& post_op_param : post_op_params) {

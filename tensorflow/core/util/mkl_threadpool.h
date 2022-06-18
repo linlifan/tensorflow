@@ -29,6 +29,8 @@ limitations under the License.
 #include "mkldnn.hpp"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/platform/threadpool.h"
+#include "tensorflow/core/platform/cpu_info.h"
+#include "tensorflow/core/util/onednn_env_vars.h"
 #define EIGEN_USE_THREADS
 
 namespace tensorflow {
@@ -62,14 +64,16 @@ inline void balance211(T n, U team, U tid, T* n_start, T* n_end) {
 
 struct MklDnnThreadPool : public threadpool_iface {
   MklDnnThreadPool() = default;
+  
+  MklDnnThreadPool(OpKernelContext* ctx, int num_threads = -1) {
+    eigen_interface_ = ctx->device()
+                           ->tensorflow_cpu_worker_threads()
+                           ->workers->AsEigenThreadPool();
+    num_threads_ =
+        (num_threads == -1) ? eigen_interface_->NumThreads() : num_threads;
+ }
+  virtual int get_num_threads() const override { return num_threads_; }
 
-  MklDnnThreadPool(OpKernelContext* ctx)
-      : eigen_interface_(ctx->device()
-                             ->tensorflow_cpu_worker_threads()
-                             ->workers->AsEigenThreadPool()) {}
-  virtual int get_num_threads() const override {
-    return eigen_interface_->NumThreads();
-  }
   virtual bool get_in_parallel() const override {
     return (eigen_interface_->CurrentThreadId() != -1) ? true : false;
   }
@@ -88,24 +92,52 @@ struct MklDnnThreadPool : public threadpool_iface {
     int nthr = get_num_threads();
     int njobs = std::min(n, nthr);
     bool balance = (nthr < n);
-    for (int i = 0; i < njobs; i++) {
-      eigen_interface_->ScheduleWithHint(
-          [balance, i, n, njobs, fn]() {
-            if (balance) {
-              int start, end;
-              balance211(n, njobs, i, &start, &end);
-              for (int j = start; j < end; j++) fn(j, n);
-            } else {
-              fn(i, n);
-            }
-          },
-          i, i + 1);
-    }
+ 
+    if (ThreadPoolUseCallerThread(nthr)  /*&& nthr == port::NumSchedulableCPUs()*/) {
+      // schedule njobs-1 jobs to thread pool
+      for (int i = 0; i < njobs - 1; i++) {
+        eigen_interface_->ScheduleWithHint(
+            [balance, i, n, njobs, fn]() {
+              if (balance) {
+                int start, end;
+                balance211(n, njobs, i, &start, &end);
+                for (int j = start; j < end; j++) fn(j, n);
+              } else {
+                fn(i, n);
+              }
+            },
+            i, i + 1);
+      }
+      // run last job in caller thread
+      if (balance) {
+        int start, end;
+        balance211(n, njobs, njobs - 1, &start, &end);
+        for (int j = start; j < end; j++) fn(j, n);
+      } else {
+        fn(n - 1, n);
+      }
+    } else {
+      for (int i = 0; i < njobs; i++) {
+        eigen_interface_->ScheduleWithHint(
+            [balance, i, n, njobs, fn]() {
+              if (balance) {
+                int start, end;
+                balance211(n, njobs, i, &start, &end);
+                for (int j = start; j < end; j++) fn(j, n);
+              } else {
+                fn(i, n);
+              }
+            },
+            i, i + 1);
+      }
+    } 
+ 
   }
   ~MklDnnThreadPool() {}
 
  private:
   Eigen::ThreadPoolInterface* eigen_interface_ = nullptr;
+  int num_threads_ = 1;  // Execute in caller thread.
 };
 
 #else

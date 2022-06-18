@@ -42,5 +42,21 @@ bool UseSystemAlloc() {
   return use_sys_alloc;
 }
 
+
+bool ThreadPoolUseCallerThread(int nthr = 1) {
+  static bool threadpool_use_caller_thread = false;
+  static int num_cores = 1;
+  static absl::once_flag once;
+  absl::call_once(once, [&] {
+    TF_CHECK_OK(ReadBoolFromEnvVar("TF_ONEDNN_THREADPOOL_USE_CALLER_THREAD",
+                                   /*default_value*/ false, &threadpool_use_caller_thread));
+    int ht = port::NumHyperthreadsPerCore();
+    num_cores = ((port::NumSchedulableCPUs() + ht - 1) / ht);
+  });
+
+  return (threadpool_use_caller_thread && (nthr == num_cores));
+}
+
+
 }  // namespace tensorflow
 #endif  // INTEL_MKL

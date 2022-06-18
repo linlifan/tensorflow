@@ -258,8 +258,10 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
         }
       }
       std::shared_ptr<stream> cpu_stream;
-      MklDnnThreadPool eigen_tp(ctx);
+      auto st = ExecuteSingleThreadedGemm(batch, channel, k, sizeof(T));
+      MklDnnThreadPool eigen_tp(ctx, st ? 1 : -1);
       cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
+      
       // Execute fused matmul op.
       UserScratchPad<unsigned char> scratch_pad;
       scratch_pad.AllocateSPTensor(matmul_prim, ctx);
