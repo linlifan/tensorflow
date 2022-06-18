@@ -217,7 +217,8 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     // Check if there is any fusion as post-ops
     auto const& post_op_params = matmul_fwd_params.post_op_params;
     mkldnn::primitive_attr post_ops_attr;
-    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    //post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::library);
     mkldnn::post_ops post_ops;
     if (!post_op_params.empty()) {
       for (auto const& post_op_param : post_op_params) {
