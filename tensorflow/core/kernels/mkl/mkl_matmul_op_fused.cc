@@ -258,8 +258,9 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
         }
       }
       std::shared_ptr<stream> cpu_stream;
-      auto st = ExecuteSingleThreadedGemm(batch, channel, k, sizeof(T));
-      MklDnnThreadPool eigen_tp(ctx, st ? 1 : -1);
+      //auto st = ExecuteSingleThreadedGemm(batch, channel, k, sizeof(T));
+      auto thread_num = EvaluateGemmThreadNum(batch, channel, k, sizeof(T));
+      MklDnnThreadPool eigen_tp(ctx, thread_num);
       cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
       
       // Execute fused matmul op.

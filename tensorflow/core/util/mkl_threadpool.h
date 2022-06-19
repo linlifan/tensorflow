@@ -70,7 +70,7 @@ struct MklDnnThreadPool : public threadpool_iface {
                            ->tensorflow_cpu_worker_threads()
                            ->workers->AsEigenThreadPool();
     num_threads_ =
-        (num_threads == -1) ? eigen_interface_->NumThreads() : num_threads;
+        (num_threads == -1 || num_threads > eigen_interface_->NumThreads() ) ? eigen_interface_->NumThreads() : num_threads;
  }
   virtual int get_num_threads() const override { return num_threads_; }
 

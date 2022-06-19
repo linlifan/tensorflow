@@ -54,6 +54,39 @@ inline bool ExecuteSingleThreadedGemm(int m, int n, int k, int bytes) {
   return mul_size < l2_heur;
 }
 
+inline int EvaluateGemmThreadNum(int m, int n, int k, int bytes) {
+  
+  ptrdiff_t l1_size = cache_sizes.m_l1; 
+  ptrdiff_t l2_size = cache_sizes.m_l2;
+
+  //constexpr float kHeuristicMultiplier = 1.01;
+  const int64_t mul_size1 = bytes * k * (m + n);
+  const int64_t mul_size = bytes * (m * n + mul_size1);
+  //const float l2_heur = l2_size * kHeuristicMultiplier;
+
+  int thread_num = -1;
+  //int64_t cache_size = static_cast<int64_t>(l1_size + l2_size);
+
+  if (mul_size <= (l1_size + l2_size)) {
+     thread_num = 1;
+  }
+  else {
+     thread_num = 8; // ((mul_size / (l1_size + l2_size)) >> 4 ) << 1 ;
+  }
+  /*
+  else {
+     thread_num = (mul_size / cache_size) ;
+  }
+  
+  thread_num = (thread_num <= 0) ? 1 : thread_num;
+  thread_num = (thread_num >= 24) ? 24 : thread_num;  
+  */
+  
+  //if (thread_num == 0) thread_num = -1;
+  //std::cout<<"evaluate thread num: "<<thread_num<<std::endl;
+
+  return thread_num;
+}
 
 
 // This structure aggregates multiple inputs to MklDnnMatMul* methods.
@@ -225,8 +258,8 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     // Check if there is any fusion as post-ops
     auto const& post_op_params = matmul_fwd_params.post_op_params;
     mkldnn::primitive_attr post_ops_attr;
-    //post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
-    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::library);
+    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+    //post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::library);
     mkldnn::post_ops post_ops;
     if (!post_op_params.empty()) {
       for (auto const& post_op_param : post_op_params) {
