@@ -27,6 +27,7 @@ limitations under the License.
 #include "tensorflow/core/util/mkl_util.h"
 
 #include "tensorflow/core/util/onednn_env_vars.h"
+#include "tensorflow/core/util/env_var.h"
 
 using mkldnn::inner_product_forward;
 using mkldnn::primitive_attr;
@@ -71,19 +72,10 @@ inline int EvaluateGemmThreadNum(int m, int n, int k, int bytes) {
      thread_num = 1;
   }
   else {
-     thread_num = 8; // ((mul_size / (l1_size + l2_size)) >> 4 ) << 1 ;
+    int64_t env_thread_num;
+    TF_CHECK_OK(ReadInt64FromEnvVar("TF_ONEDNN_THREAD_NUM", -1, &env_thread_num));
+    thread_num = env_thread_num;
   }
-  /*
-  else {
-     thread_num = (mul_size / cache_size) ;
-  }
-  
-  thread_num = (thread_num <= 0) ? 1 : thread_num;
-  thread_num = (thread_num >= 24) ? 24 : thread_num;  
-  */
-  
-  //if (thread_num == 0) thread_num = -1;
-  //std::cout<<"evaluate thread num: "<<thread_num<<std::endl;
 
   return thread_num;
 }

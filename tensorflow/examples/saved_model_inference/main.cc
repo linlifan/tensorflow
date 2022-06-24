@@ -6,6 +6,7 @@
 #include <mutex>
 #include <algorithm>
 #include <thread>
+#include <numeric>
 #include "tensorflow/cc/saved_model/loader.h"
 #include "tensorflow/core/profiler/lib/profiler_session.h"
 #include "tensorflow/core/profiler/rpc/client/capture_profile.h"
@@ -120,8 +121,7 @@ int main(int argc, char* argv[]) {
     Clock::time_point stop = Clock::now();
     MS diff = std::chrono::duration_cast<MS>(stop - start);
     
-    std::thread::id this_id = std::this_thread::get_id();
-    printf("thread 0x%x, Latency: %f ms. BS: %d \n",  this_id , diff.count(), BS - range + bs);
+    printf("Latency: %f ms. BS: %d \n",  diff.count(), BS - range + bs);
     
     std::lock_guard<std::mutex> guard(mu);
     latency_record.push_back(diff.count());
@@ -167,19 +167,22 @@ int main(int argc, char* argv[]) {
       }
   };
   
-  pool.Schedule(ThreadLauncher);
+  //pool.Schedule(ThreadLauncher);
+  ThreadLauncher();
+
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+
+#if 0
+  std::cout<<"model 1 is serving, main thread sleep 1 sec, model2 start to loadn"<<std::endl;
   
 
-  std::this_thread::sleep_for(std::chrono::seconds(9));
-  std::cout<<"model 1 is serving, main thread sleep 9 sec, model2 start to loadn"<<std::endl;
-  
   status = tensorflow::LoadSavedModel(session_options, run_options, model_path, {"serve"}, &bundle1);
 
   if (!status.ok()) {
     printf("Failed to load model. Error message: %s \n", status.error_message().c_str());
     return -1;
   }
-
+  
   auto session1 = bundle1.GetSession();
 
   auto signature1 = bundle1.GetSignatures().at("serving_default");
@@ -224,9 +227,12 @@ int main(int argc, char* argv[]) {
   }
   
   std::cout<<"model 2 loaded and warmup"<<std::endl;
-  
+#endif
+   
+  double sum = std::accumulate(latency_record.begin(), latency_record.end(), 1);
   std::sort(latency_record.begin(), latency_record.end());
 
+  std::cout<<"model 1 avg : "<<sum / latency_record.size()<<std::endl;
   std::cout<<"model 1 p99 : "<<latency_record[(int)(latency_record.size() * 0.99)]<<std::endl;
   std::cout<<"model 1 p999 : "<<latency_record[(int)(latency_record.size() * 0.999)]<<std::endl;
 
