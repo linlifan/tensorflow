@@ -592,8 +592,12 @@ class MklMatMulPrimitive : public MklPrimitive {
   }
 
   ~MklMatMulPrimitive() {}
-
-  void Execute(const T* a_data, const T* b_data, T* c_data,
+  
+  dnnl::memory::desc GetScratchPadDesc() {
+    return context_.prim_desc->scratchpad_desc();
+  }
+  
+  void Execute(const T* a_data, const T* b_data, T* c_data, void* sp_data,
                std::shared_ptr<stream> stream) {
 #ifndef ENABLE_ONEDNN_OPENMP
     context_.a_mem->set_data_handle(static_cast<void*>(const_cast<T*>(a_data)),
@@ -602,10 +606,12 @@ class MklMatMulPrimitive : public MklPrimitive {
                                     *stream);
     context_.c_mem->set_data_handle(static_cast<void*>(const_cast<T*>(c_data)),
                                     *stream);
+    context_.sp_mem->set_data_handle(sp_data, *stream);
 #else
     context_.a_mem->set_data_handle(static_cast<void*>(const_cast<T*>(a_data)));
     context_.b_mem->set_data_handle(static_cast<void*>(const_cast<T*>(b_data)));
     context_.c_mem->set_data_handle(static_cast<void*>(const_cast<T*>(c_data)));
+    context_.sp_mem->set_data_handle(sp_data);
 #endif  // !ENABLE_ONEDNN_OPENMP
     execute_primitives(context_.matmul_primitives, stream, context_.net_args);
 
@@ -613,6 +619,7 @@ class MklMatMulPrimitive : public MklPrimitive {
     context_.a_mem->set_data_handle(DummyData);
     context_.b_mem->set_data_handle(DummyData);
     context_.c_mem->set_data_handle(DummyData);
+    context_.sp_mem->set_data_handle(DummyData);
   }
 
  private:
@@ -622,7 +629,7 @@ class MklMatMulPrimitive : public MklPrimitive {
     std::shared_ptr<mkldnn::memory> a_mem;
     std::shared_ptr<mkldnn::memory> b_mem;
     std::shared_ptr<mkldnn::memory> c_mem;
-
+    std::shared_ptr<mkldnn::memory> sp_mem;
     // Descriptor and primitive-descriptor for MatMul.
     std::shared_ptr<matmul::desc> desc;
     std::shared_ptr<matmul::primitive_desc> prim_desc;
@@ -640,6 +647,7 @@ class MklMatMulPrimitive : public MklPrimitive {
         : a_mem(nullptr),
           b_mem(nullptr),
           c_mem(nullptr),
+          sp_mem(nullptr),
           desc(nullptr),
           prim_desc(nullptr),
           a_md(nullptr),
@@ -659,13 +667,16 @@ class MklMatMulPrimitive : public MklPrimitive {
 
     context_.c_md.reset(
         new memory::desc({params.c_dims}, MklDnnType<T>(), params.c_strides));
+    
+    dnnl::primitive_attr post_ops_attr;
+    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
 
     // Create matmul.
     context_.desc.reset(
         new matmul::desc(*context_.a_md, *context_.b_md, *context_.c_md));
     context_.prim_desc.reset(
-        new matmul::primitive_desc(*context_.desc, cpu_engine_));
-
+        new matmul::primitive_desc(*context_.desc, post_ops_attr, cpu_engine_));
+    
     // Create memory primitive based on dummy data.
     context_.a_mem.reset(
         new mkldnn::memory(*context_.a_md, cpu_engine_, DummyData));
@@ -673,11 +684,12 @@ class MklMatMulPrimitive : public MklPrimitive {
         new mkldnn::memory(*context_.b_md, cpu_engine_, DummyData));
     context_.c_mem.reset(
         new mkldnn::memory(*context_.b_md, cpu_engine_, DummyData));
-
+    context_.sp_mem.reset(new dnnl::memory(context_.prim_desc->scratchpad_desc(), cpu_engine_, DummyData));
     // Create matmul primitive.
     matmul_primitive.reset(new mkldnn::matmul(*context_.prim_desc));
     context_.net_args.push_back({{MKLDNN_ARG_SRC, *context_.a_mem},
                                  {MKLDNN_ARG_WEIGHTS, *context_.b_mem},
+                                 {MKLDNN_ARG_SCRATCHPAD, *context_.sp_mem},
                                  {MKLDNN_ARG_DST, *context_.c_mem}});
 
     context_.matmul_primitives.push_back(*matmul_primitive);
@@ -770,12 +782,15 @@ void dnnl_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k,
                          c_strides);
   MklMatMulPrimitive<T>* matmul_prim =
       MklMatMulPrimitiveFactory<T>::Get(params, 0);
-
+  
   // Execute matmul primitive.
+  UserScratchPad<unsigned char> scratch_pad;
+  scratch_pad.AllocateSPTensor(matmul_prim, ctx);
+  auto st = EvaluateGemmThreadNum(m, n, k, sizeof(T));
   std::shared_ptr<stream> cpu_stream;
-  MklDnnThreadPool eigen_tp(ctx);
+  MklDnnThreadPool eigen_tp(ctx, st ? 1 : -1);
   cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
-  matmul_prim->Execute(a, b, c, cpu_stream);
+  matmul_prim->Execute(a, b, c, scratch_pad.Get(), cpu_stream);
 }
 
 }  // anonymous namespace

@@ -143,11 +143,13 @@ class BatchMatMulMkl : public OpKernel {
         MklMatMulPrimitiveFactory<Scalar>::Get(
             *params, false /* value for do_not_cache */);
     // Execute matmul primitive.
+    UserScratchPad<unsigned char> scratch_pad;
+    scratch_pad.AllocateSPTensor(matmul_prim, ctx);
     std::shared_ptr<stream> cpu_stream;
     MklDnnThreadPool eigen_tp(ctx);
     cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
     matmul_prim->Execute(lhs.flat<Scalar>().data(), rhs.flat<Scalar>().data(),
-                         out->flat<Scalar>().data(), cpu_stream);
+                         out->flat<Scalar>().data(), scratch_pad.Get(), cpu_stream);
   }
 
  private:
