@@ -132,7 +132,7 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     // Extend the basic parameters for data types and fusions.
     ExtendMklDnnMatMulFwdParams(ctx, matmul_params);
     MklDnnMatMulFwdPrimitive<T, T, T, T, T>* matmul_prim =
-        MklDnnMatMulFwdPrimitiveFactory<T, T, T, T, T>::Get(matmul_params, 0);
+        MklDnnMatMulFwdGlobalPrimitiveFactory<T, T, T, T, T>::Get(matmul_params, 0);
 
     // Allocate output tensor.
     Tensor* dst_tensor = nullptr;

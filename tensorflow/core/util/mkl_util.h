@@ -1873,6 +1873,47 @@ class MklPrimitiveFactory {
   }
 };
 
+template <typename T>
+class MklGlobalPrimitiveFactory {
+ public:
+  MklGlobalPrimitiveFactory() {}
+
+  ~MklGlobalPrimitiveFactory() {}
+
+  MklPrimitive* GetOp(const string& key) {
+    auto& lru_cache = MklGlobalPrimitiveFactory<T>::GetLRUCache();
+    return lru_cache.GetOp(key);
+  }
+
+  void SetOp(const string& key, MklPrimitive* op) {
+    auto& lru_cache = MklGlobalPrimitiveFactory<T>::GetLRUCache();
+    lru_cache.SetOp(key, op);
+  }
+
+  /// Function to decide whether HW has AVX512 or AVX2
+  /// For those legacy device(w/o AVX512 and AVX2),
+  /// MKL-DNN GEMM will be used.
+  static inline bool IsLegacyPlatform() {
+    return (!port::TestCPUFeature(port::CPUFeature::AVX512F) &&
+            !port::TestCPUFeature(port::CPUFeature::AVX2));
+  }
+
+  /// Function to check whether primitive memory optimization is enabled
+  static inline bool IsPrimitiveMemOptEnabled() {
+    bool is_primitive_mem_opt_enabled = true;
+    TF_CHECK_OK(ReadBoolFromEnvVar("TF_MKL_OPTIMIZE_PRIMITIVE_MEMUSE", true,
+                                   &is_primitive_mem_opt_enabled));
+    return is_primitive_mem_opt_enabled;
+  }
+
+ private:
+  static inline LRUCache<MklPrimitive>& GetLRUCache() {
+    static const int kCapacity = 4096;  // cache capacity
+    static LRUCache<MklPrimitive> lru_cache_(kCapacity);
+    return lru_cache_;
+  }
+};
+
 // utility class for creating keys of MKL primitive pool.
 class FactoryKeyCreator {
  public:

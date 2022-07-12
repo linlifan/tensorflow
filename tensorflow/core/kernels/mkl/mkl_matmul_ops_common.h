@@ -175,6 +175,10 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     context_.bias_mem->set_data_handle(DummyData);
     context_.dst_mem->set_data_handle(DummyData);
   }
+  
+  void ExecuteLite(std::shared_ptr<stream> fwd_stream, std::vector<std::unordered_map<int, memory>>& net_args) {
+    execute_primitives(context_.fwd_primitives, fwd_stream, net_args);
+  }
 
   std::shared_ptr<mkldnn::inner_product_forward::primitive_desc>
   GetPrimitiveDesc() const {
@@ -431,6 +435,113 @@ class MklDnnMatMulFwdPrimitiveFactory : public MklPrimitiveFactory<T> {
     string key = CreateKey(mkldnn_matmul_fwd_dims);
     this->SetOp(key, op);
   }
+};
+
+
+
+template <typename T, typename Tinput, typename Tweight, typename Tbias,
+          typename Toutput>
+class MklDnnMatMulFwdGlobalPrimitiveFactory {
+ public:
+  static MklDnnMatMulFwdPrimitive<T, Tinput, Tweight, Tbias, Toutput>* Get(
+      const MklDnnMatMulFwdParams& mkldnn_matmul_fwd_dims, bool do_not_cache) {
+    MklDnnMatMulFwdPrimitive<T, Tinput, Tweight, Tbias, Toutput>* matmul_fwd =
+        nullptr;
+
+    if (do_not_cache) {
+      // Always create new primitive
+      matmul_fwd =
+          new MklDnnMatMulFwdPrimitive<T, Tinput, Tweight, Tbias, Toutput>(
+              mkldnn_matmul_fwd_dims);
+    } else {
+      //get a lock from global mutex array according to k and n
+      int index = (mkldnn_matmul_fwd_dims.weight_dims[0] + mkldnn_matmul_fwd_dims.weight_dims[1]) % mutex_num;
+      mutex_lock lock(mu_array[index]);
+      
+      // Try to find a suitable one in pool
+      matmul_fwd = dynamic_cast<
+          MklDnnMatMulFwdPrimitive<T, Tinput, Tweight, Tbias, Toutput>*>(
+          MklDnnMatMulFwdGlobalPrimitiveFactory<T, Tinput, Tweight, Tbias,
+                                          Toutput>::GetInstance()
+              .GetMklDnnMatMulFwd(index, mkldnn_matmul_fwd_dims));
+      if (matmul_fwd == nullptr) {
+        matmul_fwd =
+            new MklDnnMatMulFwdPrimitive<T, Tinput, Tweight, Tbias, Toutput>(
+                mkldnn_matmul_fwd_dims);
+        MklDnnMatMulFwdGlobalPrimitiveFactory<T, Tinput, Tweight, Tbias,
+                                        Toutput>::GetInstance()
+            .SetMklDnnMatMulFwd(index, mkldnn_matmul_fwd_dims, matmul_fwd);
+      }
+    }
+    return matmul_fwd;
+  }
+
+ private:
+  MklDnnMatMulFwdGlobalPrimitiveFactory() {
+    for (int i = 0; i < mutex_num; i++)
+    {
+        prim_pool.push_back(MklGlobalPrimitiveFactory<T>());
+    }
+  }
+
+  ~MklDnnMatMulFwdGlobalPrimitiveFactory() {}
+
+  static MklDnnMatMulFwdGlobalPrimitiveFactory& GetInstance() {
+    static MklDnnMatMulFwdGlobalPrimitiveFactory instance_;
+    return instance_;
+  }
+
+  static string CreateKey(const MklDnnMatMulFwdParams& mkldnn_matmul_fwd_dims) {
+    string prefix = "matmul_fwd_";
+    FactoryKeyCreator key_creator;
+    key_creator.AddAsKey(prefix);
+    key_creator.AddAsKey(mkldnn_matmul_fwd_dims.src_dims);
+    key_creator.AddAsKey(mkldnn_matmul_fwd_dims.weight_dims);
+    key_creator.AddAsKey(mkldnn_matmul_fwd_dims.bias_dims);
+    key_creator.AddAsKey(mkldnn_matmul_fwd_dims.dst_dims);
+    key_creator.AddAsKey(mkldnn_matmul_fwd_dims.dtypes);
+    key_creator.AddAsKey(mkldnn_matmul_fwd_dims.weight_format);
+
+    // Generate keys for post-ops
+    for (auto const& post_op_param : mkldnn_matmul_fwd_dims.post_op_params) {
+      if (post_op_param.name == "relu" || post_op_param.name == "relu6" ||
+          post_op_param.name == "elu" || post_op_param.name == "tanh" ||
+          post_op_param.name == "leakyrelu") {
+        DCHECK_EQ(post_op_param.param.size(), 3);
+        key_creator.AddAsKey(post_op_param.name);
+        key_creator.AddAsKey(post_op_param.param[0]);
+        key_creator.AddAsKey(post_op_param.param[1]);
+        key_creator.AddAsKey(post_op_param.param[2]);
+      } else if (post_op_param.name == "sum") {
+        DCHECK_EQ(post_op_param.param.size(), 1);
+        key_creator.AddAsKey(post_op_param.name);
+        key_creator.AddAsKey(post_op_param.param[0]);
+      } else if (post_op_param.name == "output_scale") {
+        DCHECK_EQ(post_op_param.param.size(), 1);
+        key_creator.AddAsKey(post_op_param.name);
+        key_creator.AddAsKey(post_op_param.param[0]);
+      } else {
+        return string("not_a_key");
+      }
+    }
+    return key_creator.GetKey();
+  }
+
+  MklPrimitive* GetMklDnnMatMulFwd(const int index,
+      const MklDnnMatMulFwdParams& mkldnn_matmul_fwd_dims) {
+    string key = CreateKey(mkldnn_matmul_fwd_dims);
+    return prim_pool[index].GetOp(key);
+  }
+
+  void SetMklDnnMatMulFwd(const int index, const MklDnnMatMulFwdParams& mkldnn_matmul_fwd_dims,
+                          MklPrimitive* op) {
+    string key = CreateKey(mkldnn_matmul_fwd_dims);
+     prim_pool[index]SetOp(key, op);
+  }
+  
+  const mutex_num = 5;
+  static mutex mu_array[mutex_num];
+  std::vector<MklGlobalPrimitiveFactory<T>> prim_pool; 
 };
 
 template <class Tweight, class Toutput>
