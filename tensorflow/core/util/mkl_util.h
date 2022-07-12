@@ -1876,17 +1876,20 @@ class MklPrimitiveFactory {
 template <typename T>
 class MklGlobalPrimitiveFactory {
  public:
-  MklGlobalPrimitiveFactory() {}
+  MklGlobalPrimitiveFactory() {
+    int kCapacity = 4096;  // cache capacity
+    lru_cache_ = LRUCache<MklPrimitive>(kCapacity);
+  }
 
   ~MklGlobalPrimitiveFactory() {}
 
   MklPrimitive* GetOp(const string& key) {
-    auto& lru_cache = MklGlobalPrimitiveFactory<T>::GetLRUCache();
+    auto& lru_cache = GetLRUCache();
     return lru_cache.GetOp(key);
   }
 
   void SetOp(const string& key, MklPrimitive* op) {
-    auto& lru_cache = MklGlobalPrimitiveFactory<T>::GetLRUCache();
+    auto& lru_cache = GetLRUCache();
     lru_cache.SetOp(key, op);
   }
 
@@ -1907,11 +1910,14 @@ class MklGlobalPrimitiveFactory {
   }
 
  private:
-  static inline LRUCache<MklPrimitive>& GetLRUCache() {
-    static const int kCapacity = 4096;  // cache capacity
-    static LRUCache<MklPrimitive> lru_cache_(kCapacity);
+  inline LRUCache<MklPrimitive>& GetLRUCache() {
+    //static const int kCapacity = 4096;  // cache capacity
+    //static LRUCache<MklPrimitive> lru_cache_(kCapacity);
     return lru_cache_;
   }
+  
+  
+  LRUCache<MklPrimitive> lru_cache_;
 };
 
 // utility class for creating keys of MKL primitive pool.

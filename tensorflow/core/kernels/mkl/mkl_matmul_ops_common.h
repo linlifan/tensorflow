@@ -176,7 +176,7 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     context_.dst_mem->set_data_handle(DummyData);
   }
   
-  void ExecuteLite(std::shared_ptr<stream> fwd_stream, std::vector<std::unordered_map<int, memory>>& net_args) {
+  void ExecuteLite(std::vector<std::unordered_map<int, memory>>& net_args, std::shared_ptr<stream> fwd_stream) {
     execute_primitives(context_.fwd_primitives, fwd_stream, net_args);
   }
 
@@ -437,7 +437,8 @@ class MklDnnMatMulFwdPrimitiveFactory : public MklPrimitiveFactory<T> {
   }
 };
 
-
+static const int mutex_num = 5;
+static mutex mu_array[mutex_num];
 
 template <typename T, typename Tinput, typename Tweight, typename Tbias,
           typename Toutput>
@@ -480,7 +481,7 @@ class MklDnnMatMulFwdGlobalPrimitiveFactory {
   MklDnnMatMulFwdGlobalPrimitiveFactory() {
     for (int i = 0; i < mutex_num; i++)
     {
-        prim_pool.push_back(MklGlobalPrimitiveFactory<T>());
+        //prim_pool.push_back(MklGlobalPrimitiveFactory<T>());
     }
   }
 
@@ -530,18 +531,17 @@ class MklDnnMatMulFwdGlobalPrimitiveFactory {
   MklPrimitive* GetMklDnnMatMulFwd(const int index,
       const MklDnnMatMulFwdParams& mkldnn_matmul_fwd_dims) {
     string key = CreateKey(mkldnn_matmul_fwd_dims);
-    return prim_pool[index].GetOp(key);
+    return prim_pool_[index].GetOp(key);
   }
 
   void SetMklDnnMatMulFwd(const int index, const MklDnnMatMulFwdParams& mkldnn_matmul_fwd_dims,
                           MklPrimitive* op) {
     string key = CreateKey(mkldnn_matmul_fwd_dims);
-     prim_pool[index]SetOp(key, op);
+     prim_pool_[index].SetOp(key, op);
   }
   
-  const mutex_num = 5;
-  static mutex mu_array[mutex_num];
-  std::vector<MklGlobalPrimitiveFactory<T>> prim_pool; 
+  MklGlobalPrimitiveFactory<T> prim_pool_[mutex_num];
+  //std::vector<MklGlobalPrimitiveFactory<T>> prim_pool; 
 };
 
 template <class Tweight, class Toutput>

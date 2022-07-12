@@ -267,8 +267,24 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
       UserScratchPad<unsigned char> scratch_pad;
       scratch_pad.AllocateSPTensor(matmul_prim, ctx);
 
-      matmul_prim->Execute(src_data, weight_data, bias_data, dst_data,
-                           scratch_pad.Get(), cpu_stream);
+      //matmul_prim->Execute(src_data, weight_data, bias_data, dst_data, scratch_pad.Get(), cpu_stream);
+
+      mkldnn::memory src_mem = memory(matmul_pd->src_desc(), matmul_prim->GetEngine(),  static_cast<void*>(const_cast<T*>(src_data)));
+      mkldnn::memory dst_mem = memory(matmul_pd->dst_desc(), matmul_prim->GetEngine(),  static_cast<void*>(const_cast<T*>(dst_data)));   
+      mkldnn::memory sp_mem = memory(matmul_pd->scratchpad_desc(), matmul_prim->GetEngine(),  scratch_pad.Get());   
+      mkldnn::memory weight_mem = memory(matmul_pd->weights_desc(), matmul_prim->GetEngine(), static_cast<void*>(const_cast<T*>(weight_data)));
+      mkldnn::memory bias_mem = memory(matmul_pd->bias_desc(), matmul_prim->GetEngine(), static_cast<void*>(const_cast<T*>(bias_data)));
+
+
+      std::vector<std::unordered_map<int, memory>> net_args;
+    
+      net_args.push_back({{MKLDNN_ARG_SRC, src_mem},
+                        {MKLDNN_ARG_WEIGHTS, weight_mem},
+                        {MKLDNN_ARG_BIAS, bias_mem},
+                        {DNNL_ARG_SCRATCHPAD, sp_mem},
+                        {MKLDNN_ARG_DST, dst_mem}});
+      matmul_prim->ExecuteLite(net_args, cpu_stream);
+
     } catch (mkldnn::error& e) {
       string error_msg = "Status: " + std::to_string(e.status) + ", message: " +
                          string(e.message) + ", in file " + string(__FILE__) +
