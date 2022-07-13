@@ -478,12 +478,7 @@ class MklDnnMatMulFwdGlobalPrimitiveFactory {
   }
 
  private:
-  MklDnnMatMulFwdGlobalPrimitiveFactory() {
-    for (int i = 0; i < mutex_num; i++)
-    {
-        //prim_pool.push_back(MklGlobalPrimitiveFactory<T>());
-    }
-  }
+  MklDnnMatMulFwdGlobalPrimitiveFactory() {}
 
   ~MklDnnMatMulFwdGlobalPrimitiveFactory() {}
 
@@ -541,7 +536,6 @@ class MklDnnMatMulFwdGlobalPrimitiveFactory {
   }
   
   MklGlobalPrimitiveFactory<T> prim_pool_[mutex_num];
-  //std::vector<MklGlobalPrimitiveFactory<T>> prim_pool; 
 };
 
 template <class Tweight, class Toutput>

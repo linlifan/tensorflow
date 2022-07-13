@@ -23,9 +23,8 @@ cc_library(
     hdrs = ["capture_profile.h"],
     copts = tf_profiler_copts(),
     visibility = [
-        #"//tensorflow/compiler/xla/python:__pkg__",
-        #"//tensorflow/python/profiler/internal:__pkg__",
-        "//visibility:public",
+        "//tensorflow/compiler/xla/python:__pkg__",
+        "//tensorflow/python/profiler/internal:__pkg__",
     ],
     deps = [
         ":profiler_client_for_pybind",
