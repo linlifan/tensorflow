@@ -1876,9 +1876,9 @@ class MklPrimitiveFactory {
 template <typename T>
 class MklGlobalPrimitiveFactory {
  public:
-  MklGlobalPrimitiveFactory() {
-    int kCapacity = 4096;  // cache capacity
-    lru_cache_ = LRUCache<MklPrimitive>(kCapacity);
+  MklGlobalPrimitiveFactory():lru_cache_(LRUCache<MklPrimitive>(4096)) {
+    //int kCapacity = 4096;  // cache capacity
+    //lru_cache_ = LRUCache<MklPrimitive>(kCapacity);
   }
 
   ~MklGlobalPrimitiveFactory() {}
