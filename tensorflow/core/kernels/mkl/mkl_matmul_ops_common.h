@@ -32,6 +32,9 @@ limitations under the License.
 #endif
 
 using dnnl::inner_product_forward;
+using dnnl::matmul;
+using dnnl::inner_product_backward_weights;
+
 using dnnl::primitive_attr;
 using dnnl::prop_kind;
 using dnnl::stream;
@@ -90,6 +93,32 @@ struct MklDnnMatMulFwdParams {
         dst_format(dst_format),
         const_weight(const_weight) {}
 };
+
+struct MklDnnMatMulBwdFilterParams {
+  memory::dims src_dims;
+  memory::dims diff_weight_dims;
+  memory::dims diff_bias_dims;
+  memory::dims diff_dst_dims;
+  memory::format_tag src_format;
+  memory::format_tag diff_weight_format;
+  memory::format_tag diff_dst_format;
+  string dtypes = string("");
+
+  MklDnnMatMulBwdFilterParams(
+      memory::dims src_dims, memory::dims diff_weight_dims,
+      memory::dims diff_bias_dims, memory::dims diff_dst_dims,
+      memory::format_tag src_format = memory::format_tag::any,
+      memory::format_tag diff_weight_format = memory::format_tag::any,
+      memory::format_tag diff_dst_format = memory::format_tag::any)
+      : src_dims(src_dims),
+        diff_weight_dims(diff_weight_dims),
+        diff_bias_dims(diff_bias_dims),
+        diff_dst_dims(diff_dst_dims),
+        src_format(src_format),
+        diff_weight_format(diff_weight_format),
+        diff_dst_format(diff_dst_format) {}
+};
+
 
 // With quantization, input, weight, bias, and output can have different types.
 // So we use different template parameters for each type.
@@ -158,7 +187,7 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     context_.dst_mem->set_data_handle(DummyData);
   }
 
-  std::shared_ptr<dnnl::inner_product_forward::primitive_desc>
+  std::shared_ptr<dnnl::matmul::primitive_desc>
   GetPrimitiveDesc() const {
     return context_.fwd_pd;
   }
@@ -174,8 +203,8 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     std::shared_ptr<dnnl::memory> sp_mem;
 
     // Descriptor and primitive-descriptor for forward inner-product.
-    std::shared_ptr<dnnl::inner_product_forward::desc> fwd_desc;
-    std::shared_ptr<dnnl::inner_product_forward::primitive_desc> fwd_pd;
+    std::shared_ptr<dnnl::matmul::desc> fwd_desc;
+    std::shared_ptr<dnnl::matmul::primitive_desc> fwd_pd;
 
     // Memory descriptors.
     std::shared_ptr<dnnl::memory::desc> src_md;
@@ -223,13 +252,20 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
                                             MklDnnType<Tbias>(),
                                             memory::format_tag::any));
     // Create an inner-product.
-    context_.fwd_desc.reset(new inner_product_forward::desc(
+    /*context_.fwd_desc.reset(new inner_product_forward::desc(
         matmul_fwd_params.const_weight ? prop_kind::forward_inference
                                        : prop_kind::forward_training,
         *context_.src_md, *context_.weight_md, *context_.bias_md,
         *context_.dst_md));
     context_.fwd_pd.reset(new inner_product_forward::primitive_desc(
         *context_.fwd_desc, cpu_engine_));
+    */
+    // Create a Matmul
+    context_.fwd_desc.reset(new matmul::desc(*context_.src_md, *context_.weight_md,*context_.bias_md, *context_.dst_md));
+    context_.fwd_pd.reset(new matmul::primitive_desc(
+	*context_.fwd_desc, cpu_engine_));
+ 
+
 
     // Check if there is any fusion as post-ops
     auto const& post_op_params = matmul_fwd_params.post_op_params;
@@ -310,10 +346,10 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
         }
       }
       post_ops_attr.set_post_ops(post_ops);
-      context_.fwd_pd.reset(new inner_product_forward::primitive_desc(
+      context_.fwd_pd.reset(new matmul::primitive_desc(
           *context_.fwd_desc, post_ops_attr, cpu_engine_));
     } else {
-      context_.fwd_pd.reset(new inner_product_forward::primitive_desc(
+      context_.fwd_pd.reset(new matmul::primitive_desc(
           *context_.fwd_desc, post_ops_attr, cpu_engine_));
     }
 
@@ -326,14 +362,14 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
         new memory(context_.fwd_pd.get()->dst_desc(), cpu_engine_, DummyData));
     context_.bias_mem.reset(new memory({{matmul_fwd_params.bias_dims},
                                         MklDnnType<Tbias>(),
-                                        memory::format_tag::x},
+                                        memory::format_tag::ab},
                                        cpu_engine_, DummyData));
     auto scratchpad_md = context_.fwd_pd->scratchpad_desc();
     context_.sp_mem.reset(
         new dnnl::memory(scratchpad_md, cpu_engine_, DummyData));
 
     // Create inner-product primitive.
-    context_.matmul_fwd.reset(new inner_product_forward(*context_.fwd_pd));
+    context_.matmul_fwd.reset(new matmul(*context_.fwd_pd));
     context_.net_args.push_back({{DNNL_ARG_SRC, *context_.src_mem},
                                  {DNNL_ARG_WEIGHTS, *context_.weight_mem},
                                  {DNNL_ARG_BIAS, *context_.bias_mem},
@@ -449,6 +485,244 @@ class MklDnnMatMulFwdPrimitiveFactory : public MklPrimitiveFactory<T> {
   }
 };
 
+template <typename T>
+class MklDnnMatMulBwdFilterPrimitive : public MklPrimitive {
+ public:
+  explicit MklDnnMatMulBwdFilterPrimitive(
+      const MklDnnMatMulBwdFilterParams& matmulBwdParams)
+      : MklPrimitive(engine(engine::kind::cpu, 0)) {
+    //context_.bwd_stream.reset(new stream(cpu_engine_));
+    // Create matmul primitive
+    if (context_.matmul_bwd == nullptr) {
+      Setup(matmulBwdParams);
+    }
+  }
+  
+  dnnl::memory::desc GetScratchPadDesc() {
+    return context_.bwd_pd->scratchpad_desc();
+  }
+
+  ~MklDnnMatMulBwdFilterPrimitive() {}
+
+  // Inner-product backward execute with bias:
+  //  - src_data: input data buffer of src
+  //  - weight_data: output data buffer of weight
+  //  - bias_data: input data buffer of bias
+  //  - dst_data: input data buffer of dst
+  void Execute(std::shared_ptr<stream> stream, const T* src_data, T* weight_data, T* bias_data,
+               const T* dst_data, void* sp_data) {
+
+#ifndef ENABLE_ONEDNN_OPENMP
+    context_.src_mem->set_data_handle(
+        static_cast<void*>(const_cast<T*>(src_data)), *stream);
+    context_.diff_weight_mem->set_data_handle(static_cast<void*>(weight_data), *stream);
+    context_.diff_bias_mem->set_data_handle(static_cast<void*>(bias_data), *stream);
+    context_.diff_dst_mem->set_data_handle(
+        static_cast<void*>(const_cast<T*>(dst_data)), *stream);
+    context_.sp_mem->set_data_handle(sp_data, *stream);
+#else             
+    context_.src_mem->set_data_handle(
+        static_cast<void*>(const_cast<T*>(src_data)));
+    context_.diff_weight_mem->set_data_handle(static_cast<void*>(weight_data));
+    context_.diff_bias_mem->set_data_handle(static_cast<void*>(bias_data));
+    context_.diff_dst_mem->set_data_handle(
+        static_cast<void*>(const_cast<T*>(dst_data)));
+    context_.sp_mem->set_data_handle(sp_data);
+#endif
+
+    execute_primitives(context_.bwd_primitives, /*context_.bwd_stream */ stream,
+                       context_.net_args);
+
+    // After execution, set data handle back
+    context_.src_mem->set_data_handle(DummyData);
+    context_.diff_weight_mem->set_data_handle(DummyData);
+    context_.diff_bias_mem->set_data_handle(DummyData);
+    context_.diff_dst_mem->set_data_handle(DummyData);
+    context_.sp_mem->set_data_handle(DummyData);
+  }
+
+  std::shared_ptr<inner_product_backward_weights::primitive_desc>
+  GetPrimitiveDesc() const {
+    return context_.bwd_pd;
+  }
+
+ private:
+  // Primitive reuse context for inner-product Bwd op
+  struct MklDnnMatMulBwdContext {
+    // MKL-DNN memory.
+    std::shared_ptr<memory> src_mem;
+    std::shared_ptr<memory> diff_weight_mem;
+    std::shared_ptr<memory> diff_bias_mem;
+    std::shared_ptr<memory> diff_dst_mem;
+    std::shared_ptr<memory> sp_mem;
+
+    // Descriptor and primitive-descriptor for forward inner-product.
+    std::shared_ptr<inner_product_forward::desc> fwd_desc;
+    std::shared_ptr<inner_product_forward::primitive_desc> fwd_pd;
+
+    // Descriptor and primitive-descriptor for backward inner-product.
+    std::shared_ptr<inner_product_backward_weights::desc> bwd_desc;
+    std::shared_ptr<inner_product_backward_weights::primitive_desc>
+        bwd_pd;
+
+    // Memory descriptors.
+    // input
+    std::shared_ptr<memory::desc> src_md;
+    std::shared_ptr<memory::desc> diff_dst_md;
+
+    // output
+    std::shared_ptr<memory::desc> diff_weight_md;
+    std::shared_ptr<memory::desc> diff_bias_md;
+
+    // Inner-product primitive.
+    std::shared_ptr<primitive> matmul_bwd;
+    std::shared_ptr<stream> bwd_stream;
+    std::vector<primitive> bwd_primitives;
+
+    std::vector<std::unordered_map<int, memory>> net_args;
+
+    MklDnnMatMulBwdContext()
+        : src_mem(nullptr),
+          diff_weight_mem(nullptr),
+          diff_bias_mem(nullptr),
+          diff_dst_mem(nullptr),
+          sp_mem(nullptr),
+          fwd_desc(nullptr),
+          fwd_pd(nullptr),
+          bwd_desc(nullptr),
+          bwd_pd(nullptr),
+          src_md(nullptr),
+          diff_weight_md(nullptr),
+          diff_bias_md(nullptr),
+          diff_dst_md(nullptr),
+          matmul_bwd(nullptr),
+          bwd_stream(nullptr) {}
+  };
+
+  void Setup(const MklDnnMatMulBwdFilterParams& matmul_bwd_params) {
+    // Create memory descriptors for inner-product data without specified
+    // format.
+    context_.src_md.reset(new memory::desc({matmul_bwd_params.src_dims},
+                                           MklDnnType<T>(),
+                                           matmul_bwd_params.src_format));
+
+    context_.diff_dst_md.reset(
+        new memory::desc({matmul_bwd_params.diff_dst_dims}, MklDnnType<T>(),
+                         matmul_bwd_params.diff_dst_format));
+
+    context_.diff_weight_md.reset(
+        new memory::desc({matmul_bwd_params.diff_weight_dims}, MklDnnType<T>(),
+                         matmul_bwd_params.diff_weight_format));
+
+    context_.diff_bias_md.reset(
+        new memory::desc({matmul_bwd_params.diff_bias_dims}, MklDnnType<T>(),
+                         memory::format_tag::x));
+    // Create an inner-product.
+    context_.fwd_desc.reset(new inner_product_forward::desc(
+        prop_kind::forward, *context_.src_md, *context_.diff_weight_md,
+        *context_.diff_bias_md, *context_.diff_dst_md));
+    context_.fwd_pd.reset(new inner_product_forward::primitive_desc(
+        *context_.fwd_desc, cpu_engine_));
+    
+    dnnl::primitive_attr post_ops_attr;
+    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::library);
+
+    context_.bwd_desc.reset(new inner_product_backward_weights::desc(
+        *context_.src_md, *context_.diff_weight_md, *context_.diff_bias_md,
+        *context_.diff_dst_md));
+    context_.bwd_pd.reset(new inner_product_backward_weights::primitive_desc(
+        *context_.bwd_desc, post_ops_attr, cpu_engine_, *context_.fwd_pd));
+
+    // Create memory primitive based on dummy data
+    context_.src_mem.reset(
+        new memory(context_.bwd_pd.get()->src_desc(), cpu_engine_, DummyData));
+    context_.diff_weight_mem.reset(new memory(
+        context_.bwd_pd.get()->diff_weights_desc(), cpu_engine_, DummyData));
+    context_.diff_dst_mem.reset(new memory(
+        context_.bwd_pd.get()->diff_dst_desc(), cpu_engine_, DummyData));
+    context_.sp_mem.reset(new memory(
+        context_.bwd_pd.get()->scratchpad_desc(), cpu_engine_, DummyData));
+    context_.diff_bias_mem.reset(new memory(
+        context_.bwd_pd.get()->diff_bias_desc(), cpu_engine_, DummyData));
+
+    // Create inner-product primitive.
+    context_.matmul_bwd.reset(
+        new inner_product_backward_weights(*context_.bwd_pd));
+    context_.net_args.push_back(
+         {{DNNL_ARG_SRC, *context_.src_mem},
+         {DNNL_ARG_DIFF_WEIGHTS, *context_.diff_weight_mem},
+         {DNNL_ARG_DIFF_BIAS, *context_.diff_bias_mem},
+         {DNNL_ARG_SCRATCHPAD, *context_.sp_mem},
+         {DNNL_ARG_DIFF_DST, *context_.diff_dst_mem}});
+
+    context_.bwd_primitives.push_back(*context_.matmul_bwd);
+    return;
+  }
+
+  struct MklDnnMatMulBwdContext context_;
+  //engine cpu_engine_;
+};
+
+template <typename T>
+class MklDnnMatMulBwdFilterPrimitiveFactory : public MklPrimitiveFactory<T> {
+ public:
+  static MklDnnMatMulBwdFilterPrimitive<T>* Get(
+      const MklDnnMatMulBwdFilterParams& mkldnn_matmul_bwd_dims) {
+    MklDnnMatMulBwdFilterPrimitive<T>* matmul_bwd = nullptr;
+    // Try to find a suitable one in pool
+    matmul_bwd = dynamic_cast<MklDnnMatMulBwdFilterPrimitive<T>*>(
+        MklDnnMatMulBwdFilterPrimitiveFactory<T>::GetInstance()
+            .GetMklDnnMatMulBwdFilter(mkldnn_matmul_bwd_dims));
+    if (matmul_bwd == nullptr) {
+      matmul_bwd =
+          new MklDnnMatMulBwdFilterPrimitive<T>(mkldnn_matmul_bwd_dims);
+      MklDnnMatMulBwdFilterPrimitiveFactory<T>::GetInstance()
+          .SetMklDnnMatMulBwdFilter(mkldnn_matmul_bwd_dims, matmul_bwd);
+    }
+    return matmul_bwd;
+  }
+
+ private:
+  MklDnnMatMulBwdFilterPrimitiveFactory() {}
+  ~MklDnnMatMulBwdFilterPrimitiveFactory() {}
+
+  static MklDnnMatMulBwdFilterPrimitiveFactory& GetInstance() {
+    static MklDnnMatMulBwdFilterPrimitiveFactory instance_;
+    return instance_;
+  }
+
+  static string CreateKey(
+      const MklDnnMatMulBwdFilterParams& mkldnn_matmul_bwd_dims) {
+    string prefix = "matmul_bwd_filter";
+    FactoryKeyCreator key_creator;
+    key_creator.AddAsKey(prefix);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.src_dims);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.diff_weight_dims);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.diff_bias_dims);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.diff_dst_dims);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.src_format);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.diff_weight_format);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.diff_dst_format);
+    key_creator.AddAsKey(mkldnn_matmul_bwd_dims.dtypes);
+
+    return key_creator.GetKey();
+  }
+
+  MklPrimitive* GetMklDnnMatMulBwdFilter(
+      const MklDnnMatMulBwdFilterParams& mkldnn_matmul_bwd_dims) {
+    string key = CreateKey(mkldnn_matmul_bwd_dims);
+    return this->GetOp(key);
+  }
+
+  void SetMklDnnMatMulBwdFilter(
+      const MklDnnMatMulBwdFilterParams& mkldnn_matmul_bwd_dims,
+      MklPrimitive* op) {
+    string key = CreateKey(mkldnn_matmul_bwd_dims);
+    this->SetOp(key, op);
+  }
+};
+
+
 template <class Tweight, class Toutput>
 class MklDnnMatMulOpBase : public OpKernel {
  public:
@@ -459,7 +733,8 @@ class MklDnnMatMulOpBase : public OpKernel {
   // Allocate output tensor.
   virtual void AllocateOutputTensor(
       OpKernelContext* context,
-      const inner_product_forward::primitive_desc& mkldnn_matmul_prim_desc,
+      //const inner_product_forward::primitive_desc& mkldnn_matmul_prim_desc,
+      const matmul::primitive_desc& mkldnn_matmul_prim_desc,
       const memory::dims& output_dims_mkl_order,
       MklTensorFormat output_tf_format, Tensor** output_tensor,
       bool native_format = false) {
@@ -497,7 +772,7 @@ class MklDnnMatMulOpBase : public OpKernel {
   // Only one thread can execute this method at any given time.
   void CacheWeight(
       OpKernelContext* context,
-      const std::shared_ptr<dnnl::inner_product_forward::primitive_desc>&
+      const std::shared_ptr<dnnl::matmul::primitive_desc>&
           matmul_fwd_pd,
       Tweight* weight_data, const Tensor& weight_tensor,
       MklDnnData<Tweight>& weight, const memory::desc& weight_md)
