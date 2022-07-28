@@ -983,12 +983,12 @@ bool FindContractionWithBiasAddGrad(const RemapperContext& ctx, int node_index,
 
   std::cout<<"remapper bias_add_grad_found."<<std::endl;
 
-#ifdef ENABLE_INTEL_MKL_BFLOAT16
+//#ifdef ENABLE_INTEL_MKL_BFLOAT16
   if (!(/*HasDataType(node_def, DT_FLOAT) ||*/ HasDataType(node_def, DT_BFLOAT16)))
     return false;
-#else
+//#else
   /*if (!HasDataType(node_def, DT_FLOAT))*/ return false;
-#endif
+//#endif
 
   // BiasAddGrad, MatMulGradFilter and MatMulGradInput use the same input.
   //
