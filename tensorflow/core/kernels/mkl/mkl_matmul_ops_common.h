@@ -625,7 +625,7 @@ class MklDnnMatMulBwdFilterPrimitive : public MklPrimitive {
         *context_.fwd_desc, cpu_engine_));
     
     dnnl::primitive_attr post_ops_attr;
-    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::library);
+    post_ops_attr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
 
     context_.bwd_desc.reset(new inner_product_backward_weights::desc(
         *context_.src_md, *context_.diff_weight_md, *context_.diff_bias_md,
