@@ -541,12 +541,14 @@ TF_CALL_bfloat16(REGISTER_FUSEDMATMUL_MKL_SUPPORTED_KERNELS_TYPES);
           .TypeConstraint<type>("T")                                          \
           .Label(mkl_op_registry::kMklLayoutDependentOpLabel),                \
       MklFusedMatMulGradOp<CPUDevice, type>);                                 \
-  REGISTER_KERNEL_BUILDER(                                                    \
-      Name("_FusedMatMulGrad").Device(DEVICE_CPU).TypeConstraint<type>("T"),  \
-      NoOp);
+//  REGISTER_KERNEL_BUILDER(                                                    \
+//      Name("_FusedMatMulGrad").Device(DEVICE_CPU).TypeConstraint<type>("T"),  \
+//      NoOp);
 
-//TF_CALL_float(REGISTER_FUSEDMATMUL_GRAD_TYPES);
+TF_CALL_float(REGISTER_FUSEDMATMUL_GRAD_TYPES);
 TF_CALL_bfloat16(REGISTER_FUSEDMATMUL_GRAD_TYPES);
+
+
 
 }  // namespace tensorflow
 
