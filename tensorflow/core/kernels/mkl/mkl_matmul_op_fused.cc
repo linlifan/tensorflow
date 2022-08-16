@@ -110,22 +110,19 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     //    [n,    ic] *    [oc,     ic] +  [oc]      =    [n,          oc]
     memory::dims src_dims = memory::dims({batch, k});
     // Reverse the weights dims from [k, channel] to [channel, k].
-    //memory::dims weight_dims = memory::dims({channel, k});
-    //memory::dims bias_dims = memory::dims({channel});
-    
-    memory::dims weight_dims = memory::dims({k, channel});
-    memory::dims bias_dims = memory::dims({1,channel});
+    memory::dims weight_dims = memory::dims({channel, k});
+    memory::dims bias_dims = memory::dims({channel});
 
     memory::dims dst_dims = memory::dims({batch, channel});
-    memory::format_tag src_format = memory::format_tag::ab;
+    memory::format_tag src_format = memory::format_tag::nc;
     memory::format_tag weight_format =
-        transpose_b_ ? memory::format_tag::ba : memory::format_tag::ab;
+        transpose_b_ ? memory::format_tag::oi : memory::format_tag::io;
 
     // Set weight format `any` for primitive as per oneDNN recommendation.
     MklDnnMatMulFwdParams matmul_params(
         src_dims, weight_dims, bias_dims, dst_dims, src_format,
         (this->is_weight_const_) ? memory::format_tag::any : weight_format,
-        memory::format_tag::ab, this->is_weight_const_);
+        memory::format_tag::nc, this->is_weight_const_);
     // Extend the basic parameters for data types and fusions.
     ExtendMklDnnMatMulFwdParams(ctx, matmul_params);
 #ifdef DNNL_AARCH64_USE_ACL
@@ -138,7 +135,7 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
 
     // Allocate output tensor.
     Tensor* dst_tensor = nullptr;
-    std::shared_ptr<dnnl::matmul::primitive_desc> matmul_pd =
+    std::shared_ptr<dnnl::inner_product_forward::primitive_desc> matmul_pd =
         matmul_prim->GetPrimitiveDesc();
 
     // The output shape of MatMul is same both for MKL and TF version.
@@ -541,9 +538,7 @@ TF_CALL_bfloat16(REGISTER_FUSEDMATMUL_MKL_SUPPORTED_KERNELS_TYPES);
           .TypeConstraint<type>("T")                                          \
           .Label(mkl_op_registry::kMklLayoutDependentOpLabel),                \
       MklFusedMatMulGradOp<CPUDevice, type>);                                 \
-//  REGISTER_KERNEL_BUILDER(                                                    \
-//      Name("_FusedMatMulGrad").Device(DEVICE_CPU).TypeConstraint<type>("T"),  \
-//      NoOp);
+
 
 TF_CALL_float(REGISTER_FUSEDMATMUL_GRAD_TYPES);
 TF_CALL_bfloat16(REGISTER_FUSEDMATMUL_GRAD_TYPES);
