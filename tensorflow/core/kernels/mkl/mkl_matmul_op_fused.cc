@@ -259,7 +259,11 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
       }
       std::shared_ptr<stream> cpu_stream;
       //auto st = ExecuteSingleThreadedGemm(batch, channel, k, sizeof(T));
-      auto thread_num = EvaluateGemmThreadNum(batch, channel, k, sizeof(T));
+      int current_thr_num = ctx->device()
+                           ->tensorflow_cpu_worker_threads()
+                           ->workers->AsEigenThreadPool()->NumThreads();
+      auto thread_num = EstimateThreadsToUse(batch, channel, k, sizeof(T), current_thr_num); //EvaluateGemmThreadNum(batch, channel, k, sizeof(T));
+      
       MklDnnThreadPool eigen_tp(ctx, thread_num);
       cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
       
