@@ -987,7 +987,7 @@ bool FindContractionWithBiasAddGrad(const RemapperContext& ctx, int node_index,
   if (!(/*HasDataType(node_def, DT_FLOAT) ||*/ HasDataType(node_def, DT_BFLOAT16)))
     return false;
 //#else
-  /*if (!HasDataType(node_def, DT_FLOAT))*/ return false;
+  /*if (!HasDataType(node_def, DT_FLOAT)) return false; */
 //#endif
 
   // BiasAddGrad, MatMulGradFilter and MatMulGradInput use the same input.
