@@ -506,3 +506,23 @@ tf_cc_test_mkl(
         "//tensorflow/core/kernels/mkl:mkl_matmul_op",
     ] + MKL_TEST_DEPS,
 )
+
+tf_mkl_kernel_library(
+    name = "mkl_cast_op",
+    srcs = [
+        "mkl_cast_op.cc",
+    ],
+    deps = MKL_DEPS + [
+        "//tensorflow/core/kernels:cast_op",
+    ],
+)
+
+tf_cc_test_mkl(
+    name = "mkl_cast_op_test",
+    size = "small",
+    srcs = ["mkl_cast_op_test.cc"],
+    linkstatic = 1,  # Fixes dyld error on MacOS.
+    deps = [
+        ":mkl_cast_op",
+    ] + MKL_TEST_DEPS,
+)

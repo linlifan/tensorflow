@@ -1106,7 +1106,14 @@ NodeDef AutoMixedPrecisionImpl::BuildCastNode(
                       "-", dst.port_id, "-", cast_string, "-", kSuffix);
   NodeDef node;
   node.set_name(name);
-  node.set_op("Cast");
+  //node.set_op("Cast");
+  if (!IsConstant(*src.node) &&
+      ((src_type == DT_FLOAT && dst_type == DT_BFLOAT16) ||
+       (src_type == DT_BFLOAT16 && dst_type == DT_FLOAT))) {
+    node.set_op("_MklCast");
+  } else {
+    node.set_op("Cast");
+  }
   node.set_device(device);
   node.add_input(strings::StrCat(src.node->name(), ":", src.port_id));
   (*node.mutable_attr())["SrcT"].set_type(src_type);

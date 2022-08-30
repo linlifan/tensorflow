@@ -704,6 +704,7 @@ cc_library(
         "//tensorflow/core/kernels/mkl:mkl_matmul_op",
         "//tensorflow/core/kernels/mkl:mkl_tfconv_op",
         "//tensorflow/core/kernels/mkl:mkl_tmp_bf16_ops",
+	"//tensorflow/core/kernels/mkl:mkl_cast_op",
     ]) + if_cuda_or_rocm([
         "//tensorflow/core/kernels:cudnn_rnn_kernels",
     ]) + if_cuda([
@@ -2058,6 +2059,7 @@ tf_cc_test_mkl(
         "//tensorflow/core/kernels/mkl:mkl_tfconv_op",
         "//tensorflow/core/kernels/mkl:mkl_transpose_op",
         "//tensorflow/core/kernels/mkl:mkl_tmp_bf16_ops",
+	"//tensorflow/core/kernels/mkl:mkl_cast_op",
     ]),
 )
 
