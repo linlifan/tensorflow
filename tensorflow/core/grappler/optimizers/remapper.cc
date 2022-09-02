@@ -1756,6 +1756,37 @@ bool FindTensorToHashBucket(const RemapperContext& ctx, int node_index,
   return true;
 }
 
+bool FindFusedSplitVCast(const RemapperContext& ctx, int node_index) {
+  // Node must be a SplitV.
+  const auto* node_view = ctx.graph_view.GetNode(node_index);
+  const auto* node_def = node_view->node();
+  if (!IsSplitV(*node_def) || HasControlFaninOrFanout(*node_view)) {
+    return false;
+  }
+
+  // dtype must be bfloat16/float
+  DataType t_dtype = GetDataTypeFromAttr(*node_def, "T");
+  if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) return false;
+
+  int num_split;
+  if (!TryGetNodeAttr(*node_def, "num_split", &num_split)) return false;
+
+  for (int i = 0; i < num_split; i++) {
+      const auto out = node_view->GetRegularFanout(i);
+
+      // every output must be one Cast
+      if (out.size() != 1) return false;
+      const auto* out_node_def = out[0].node_view()->node();
+      if (!IsCast(*out_node_def)) return false;
+
+      // cast dst dtype must be bfloat16/float
+      DataType t_dtype = GetDataTypeFromAttr(*out_node_def, "DstT");
+      if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) return false;
+  }
+
+  return true;
+}
+
 bool FindFusedBatchMatMul(RemapperContext* ctx, int node_index,
                           std::map<string, int>* matched_nodes_map,
                           std::set<int>* remove_node_indices) {
@@ -2869,6 +2900,68 @@ Status AddTensorToHashBucketNode(RemapperContext* ctx,
   return Status::OK();
 }
 
+Status AddFusedSplitVCastNode(RemapperContext* ctx,
+                              const int node_idx,
+                              std::vector<bool>* invalidated_nodes,
+                              std::vector<bool>* nodes_to_delete) {
+  const auto* node_view = ctx->graph_view.GetNode(node_idx);
+  const auto* split_v = node_view->node();
+  const auto* cast = node_view->GetRegularFanout(0)[0].node_view()->node();
+
+  NodeDef fused_op;
+  fused_op.set_name(split_v->name());
+  fused_op.set_device(split_v->device());
+  fused_op.add_input(split_v->input(0));
+  fused_op.add_input(split_v->input(1));
+  fused_op.add_input(split_v->input(2));
+  fused_op.set_op("_FusedSplitVCast");
+
+  auto* attr = fused_op.mutable_attr();
+  auto& src_attr0 = split_v->attr();
+  auto& src_attr1 = cast->attr();
+  (*attr)["num_split"] = src_attr0.at("num_split");
+  (*attr)["Tlen"] = src_attr0.at("Tlen");
+  (*attr)["SrcT"] = src_attr1.at("SrcT");
+  (*attr)["DstT"] = src_attr1.at("DstT");
+
+  utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
+  Status status;
+  mutation->AddNode(std::move(fused_op), &status);
+  TF_RETURN_IF_ERROR(status);
+  TF_RETURN_IF_ERROR(mutation->Apply());
+
+  (*invalidated_nodes)[node_idx] = true;
+
+  int num_split;
+  TryGetNodeAttr(*split_v, "num_split", &num_split);
+
+  for (int i = 0; i < num_split; i++) {
+    auto out = node_view->GetRegularFanout(i)[0];
+    const auto* cast = out.node_view()->node();
+    int idx = out.node_view()->node_index();
+
+    // Turn cast node into Identity node.
+    NodeDef identity_op;
+    identity_op.set_op("Identity");
+    identity_op.set_name(cast->name());
+    identity_op.set_device(cast->device());
+    identity_op.add_input(cast->input(0));
+    (*identity_op.mutable_attr())["T"] = cast->attr().at("DstT");
+
+    utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
+    Status status;
+    mutation->AddNode(std::move(identity_op), &status);
+    TF_RETURN_IF_ERROR(status);
+    TF_RETURN_IF_ERROR(mutation->Apply());
+
+    (*invalidated_nodes)[idx] = true;
+  }
+
+  LOG(INFO) << "fused splitv + cast";
+
+  return Status::OK();
+}
+
 Status AddFusedBatchMatMul(RemapperContext* ctx,
                            const std::map<string, int>& matched_nodes_map,
                            const std::set<int>& remove_node_indices,
@@ -3404,6 +3497,14 @@ Status Remapper::Optimize(Cluster* cluster, const GrapplerItem& item,
       TF_RETURN_IF_ERROR(AddBatchNormNodes(&ctx, fused_batch_norm));
       continue;
     }
+
+    // Remap SplitV+Cast into the _FusedSplitVCast.
+    if (FindFusedSplitVCast(ctx, i)) {
+      TF_RETURN_IF_ERROR(AddFusedSplitVCastNode(&ctx, i,
+                         &invalidated_nodes, &nodes_to_delete));
+      continue;
+    }
+
   }
 
   // Remove invalidated nodes.
