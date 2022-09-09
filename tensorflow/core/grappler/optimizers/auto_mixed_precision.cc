@@ -1107,7 +1107,8 @@ NodeDef AutoMixedPrecisionImpl::BuildCastNode(
   NodeDef node;
   node.set_name(name);
   //node.set_op("Cast");
-  if (!IsConstant(*src.node) &&
+  const char* env_p = std::getenv("TF_ENABLE_MKLCAST");
+  if ((env_p != NULL && env_p[0] == '1') && !IsConstant(*src.node) &&
       ((src_type == DT_FLOAT && dst_type == DT_BFLOAT16) ||
        (src_type == DT_BFLOAT16 && dst_type == DT_FLOAT))) {
     node.set_op("_MklCast");

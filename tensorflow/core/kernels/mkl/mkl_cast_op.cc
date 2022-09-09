@@ -86,15 +86,13 @@ class CastMkl : public OpKernel {
       const bool input_is_scalar = TensorShapeUtils::IsScalar(input_tensor.shape());
 
       // Handle empty tensors
+      bool any_dim_zero = false;
       int dims = input_tensor.dims();
-      bool any_dim_zero = (dims == 0 ? true : false);
+      any_dim_zero = (dims == 0 ? true : false);
       int64 input_num_elements = 1;
       for (int i = 0; i < dims; i++) {
-        if (!any_dim_zero) {
-          int64 per_dim_size = input_tensor.dim_size(i);
-          input_num_elements *= per_dim_size;
-          any_dim_zero = (per_dim_size == 0 ? true : false);
-        }
+        if (input_tensor.dim_size(i) == 0) any_dim_zero = true;
+        input_num_elements *= input_tensor.dim_size(i);
       }
 
       // Create an output tensor
@@ -104,7 +102,7 @@ class CastMkl : public OpKernel {
       DstT* output = (DstT*)output_tensor->tensor_data().data();
 
       // Scalar and empty tensors should fall back to tf.cast
-      if (input_is_scalar || any_dim_zero) {
+      if (input_is_scalar || any_dim_zero || dims == 1) {
         if (src_dtype_ == DT_FLOAT) {
           work_ = GetCpuCastFromFloat(dst_dtype_);
         } else {

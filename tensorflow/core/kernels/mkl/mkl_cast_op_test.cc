@@ -85,7 +85,7 @@ static Graph* CastGraph(const string& kind, const TensorShape& shape) {
         .Run(state);                                                    \
     state.SetItemsProcessed(state.iterations() * flops_per_iter);       \
   }                                                                     \
-  BENCHMARK(BM_CAST_##kind##_##type##_##A##_##B##_##SrcT##_##DstT)
+  BENCHMARK(BM_CAST_##kind##_##type##_##A##_##B##_##SrcT##_##DstT)->UseRealTime();
 
 #define BENCHMARK_CAST(A, B, type, SrcT, DstT) \
   BM_CAST(Default, A, B, type, SrcT, DstT);    \
