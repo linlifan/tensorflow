@@ -110,18 +110,19 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     //    [n,    ic] *    [oc,     ic] +  [oc]      =    [n,          oc]
     memory::dims src_dims = memory::dims({batch, k});
     // Reverse the weights dims from [k, channel] to [channel, k].
-    memory::dims weight_dims = memory::dims({channel, k});
-    memory::dims bias_dims = memory::dims({channel});
+    memory::dims weight_dims = memory::dims({k, channel});
+    memory::dims bias_dims = memory::dims({1,channel});
+ 
     memory::dims dst_dims = memory::dims({batch, channel});
-    memory::format_tag src_format = memory::format_tag::nc;
+    memory::format_tag src_format = memory::format_tag::ab;
     memory::format_tag weight_format =
-        transpose_b_ ? memory::format_tag::oi : memory::format_tag::io;
+        transpose_b_ ? memory::format_tag::ba : memory::format_tag::ab;
 
     // Set weight format `any` for primitive as per oneDNN recommendation.
     MklDnnMatMulFwdParams matmul_params(
         src_dims, weight_dims, bias_dims, dst_dims, src_format,
         (this->is_weight_const_) ? memory::format_tag::any : weight_format,
-        memory::format_tag::nc, this->is_weight_const_);
+        memory::format_tag::ab, this->is_weight_const_);
     // Extend the basic parameters for data types and fusions.
     ExtendMklDnnMatMulFwdParams(ctx, matmul_params);
 #ifdef DNNL_AARCH64_USE_ACL
@@ -129,13 +130,10 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     matmul_params.weight_address = const_cast<void*>(
         static_cast<const void*>(weight_tensor.flat<T>().data()));
 #endif
-    MklDnnMatMulFwdPrimitive<T, T, T, T, T>* matmul_prim =
-        MklDnnMatMulFwdPrimitiveFactory<T, T, T, T, T>::Get(matmul_params, 0);
 
     // Allocate output tensor.
     Tensor* dst_tensor = nullptr;
-    std::shared_ptr<dnnl::inner_product_forward::primitive_desc> matmul_pd =
-        matmul_prim->GetPrimitiveDesc();
+
 
     // The output shape of MatMul is same both for MKL and TF version.
     // They are all NC format, no matter what's the format of input.
@@ -203,6 +201,11 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     if (batch == 0 || channel == 0) {
       return;
     }
+    
+    MklDnnMatMulFwdPrimitive<T, T, T, T, T>* matmul_prim =
+    MklDnnMatMulFwdPrimitiveFactory<T, T, T, T, T>::Get(matmul_params, 0);
+    std::shared_ptr<dnnl::matmul::primitive_desc> matmul_pd =
+        matmul_prim->GetPrimitiveDesc();
 
     try {
       // Prepare the input and output for primitive.

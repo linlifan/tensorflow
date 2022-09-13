@@ -31,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/platform/mutex.h"
 #endif
 
+using dnnl::matmul;
 using dnnl::inner_product_forward;
 using dnnl::primitive_attr;
 using dnnl::prop_kind;
@@ -158,7 +159,7 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     context_.dst_mem->set_data_handle(DummyData);
   }
 
-  std::shared_ptr<dnnl::inner_product_forward::primitive_desc>
+  std::shared_ptr<dnnl::matmul::primitive_desc>
   GetPrimitiveDesc() const {
     return context_.fwd_pd;
   }
@@ -174,8 +175,8 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     std::shared_ptr<dnnl::memory> sp_mem;
 
     // Descriptor and primitive-descriptor for forward inner-product.
-    std::shared_ptr<dnnl::inner_product_forward::desc> fwd_desc;
-    std::shared_ptr<dnnl::inner_product_forward::primitive_desc> fwd_pd;
+    std::shared_ptr<dnnl::matmul::desc> fwd_desc;
+    std::shared_ptr<dnnl::matmul::primitive_desc> fwd_pd;
 
     // Memory descriptors.
     std::shared_ptr<dnnl::memory::desc> src_md;
@@ -223,13 +224,19 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
                                             MklDnnType<Tbias>(),
                                             memory::format_tag::any));
     // Create an inner-product.
-    context_.fwd_desc.reset(new inner_product_forward::desc(
+    /*context_.fwd_desc.reset(new inner_product_forward::desc(
         matmul_fwd_params.const_weight ? prop_kind::forward_inference
                                        : prop_kind::forward_training,
         *context_.src_md, *context_.weight_md, *context_.bias_md,
         *context_.dst_md));
     context_.fwd_pd.reset(new inner_product_forward::primitive_desc(
         *context_.fwd_desc, cpu_engine_));
+    */
+
+    // Create a Matmul
+    context_.fwd_desc.reset(new matmul::desc(*context_.src_md, *context_.weight_md,*context_.bias_md, *context_.dst_md));
+    context_.fwd_pd.reset(new matmul::primitive_desc(*context_.fwd_desc, cpu_engine_));
+ 
 
     // Check if there is any fusion as post-ops
     auto const& post_op_params = matmul_fwd_params.post_op_params;
@@ -310,10 +317,10 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
         }
       }
       post_ops_attr.set_post_ops(post_ops);
-      context_.fwd_pd.reset(new inner_product_forward::primitive_desc(
+      context_.fwd_pd.reset(new matmul::primitive_desc(
           *context_.fwd_desc, post_ops_attr, cpu_engine_));
     } else {
-      context_.fwd_pd.reset(new inner_product_forward::primitive_desc(
+      context_.fwd_pd.reset(new matmul::primitive_desc(
           *context_.fwd_desc, post_ops_attr, cpu_engine_));
     }
 
@@ -326,14 +333,14 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
         new memory(context_.fwd_pd.get()->dst_desc(), cpu_engine_, DummyData));
     context_.bias_mem.reset(new memory({{matmul_fwd_params.bias_dims},
                                         MklDnnType<Tbias>(),
-                                        memory::format_tag::x},
+                                        memory::format_tag::ab},
                                        cpu_engine_, DummyData));
     auto scratchpad_md = context_.fwd_pd->scratchpad_desc();
     context_.sp_mem.reset(
         new dnnl::memory(scratchpad_md, cpu_engine_, DummyData));
 
     // Create inner-product primitive.
-    context_.matmul_fwd.reset(new inner_product_forward(*context_.fwd_pd));
+    context_.matmul_fwd.reset(new matmul(*context_.fwd_pd));
     context_.net_args.push_back({{DNNL_ARG_SRC, *context_.src_mem},
                                  {DNNL_ARG_WEIGHTS, *context_.weight_mem},
                                  {DNNL_ARG_BIAS, *context_.bias_mem},
@@ -459,7 +466,8 @@ class MklDnnMatMulOpBase : public OpKernel {
   // Allocate output tensor.
   virtual void AllocateOutputTensor(
       OpKernelContext* context,
-      const inner_product_forward::primitive_desc& mkldnn_matmul_prim_desc,
+      //const inner_product_forward::primitive_desc& mkldnn_matmul_prim_desc,
+      const matmul::primitive_desc& mkldnn_matmul_prim_desc,
       const memory::dims& output_dims_mkl_order,
       MklTensorFormat output_tf_format, Tensor** output_tensor,
       bool native_format = false) {
@@ -497,7 +505,7 @@ class MklDnnMatMulOpBase : public OpKernel {
   // Only one thread can execute this method at any given time.
   void CacheWeight(
       OpKernelContext* context,
-      const std::shared_ptr<dnnl::inner_product_forward::primitive_desc>&
+      const std::shared_ptr<dnnl::matmul::primitive_desc>&
           matmul_fwd_pd,
       Tweight* weight_data, const Tensor& weight_tensor,
       MklDnnData<Tweight>& weight, const memory::desc& weight_md)
