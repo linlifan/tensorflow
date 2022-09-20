@@ -597,6 +597,10 @@ template <typename SrcT, typename DstT, typename Tlen>
 class FusedSplitVCastOp : public OpKernel {
  private:
   std::vector<DataType> dst_types_;
+  static constexpr uint64 kMinimumInputSize = 4096 * 512;
+  static constexpr uint64 kMinimumPrefixDimSize = 8;
+  static constexpr uint64 kMinimumSplitNum = 4;
+
  public:
   explicit FusedSplitVCastOp(OpKernelConstruction* c) : OpKernel(c) {
     OP_REQUIRES_OK(c, c->GetAttr("DstT", &dst_types_));
@@ -713,6 +717,16 @@ class FusedSplitVCastOp : public OpKernel {
     }
 
     const SrcT* input_ptr = input.template flat<SrcT>().data();
+    std::vector<Tensor*> results(num_split, nullptr);
+
+    const auto num_threads =
+        context->device()->tensorflow_cpu_worker_threads()->num_threads;
+    const auto input_element_count = input_shape.num_elements();
+    const bool shard_by_prefix_dim = input_element_count >= kMinimumInputSize &&
+        prefix_dim_size > kMinimumPrefixDimSize;
+    const bool use_parallelism_between_outputs =
+        (num_split >= kMinimumSplitNum &&
+         input_element_count >= std::min(num_threads, num_split) * 4096);
 
     auto range_output_func = [&](int64_t start, int64_t limit) {
       for (int i = start; i < limit; i++) {
@@ -744,10 +758,49 @@ class FusedSplitVCastOp : public OpKernel {
       }
     };
 
-    const auto input_element_count = input_shape.num_elements();
-    Shard(num_split,
-          context->device()->tensorflow_cpu_worker_threads()->workers,
-          num_split, input_element_count / num_split, range_output_func);
+    auto range_prefix_dim_func = [&](int64_t start, int64_t limit) {
+      for (int i = start; i < limit; i++) {
+        for (int j = 0; j < num_split; j++) {
+          const SrcT* src = input_ptr + i * split_dim_size * suffix_dim_size + split_start_points[j];
+          int size = split_sizes_vec[j] * suffix_dim_size;
+          if (dst_types_[j] == DataTypeToEnum<DstT>::value) {
+            // dst_type == DstT, need to cast from SrcT to DstT
+            DstT* out_ptr = results[j]->template flat<DstT>().data();
+            DstT* dst = out_ptr + i * size;
+            Eigen::TensorMap<const Eigen::Tensor<SrcT, 1>> src_tensor(src, size);
+            Eigen::TensorMap<Eigen::Tensor<DstT, 1>> dst_tensor(dst, size);
+
+            dst_tensor = src_tensor.template cast<DstT>();
+          } else if (dst_types_[j] == DataTypeToEnum<SrcT>::value) {
+            // dst_type == SrcT, no cast
+            SrcT* out_ptr = results[j]->template flat<SrcT>().data();
+            SrcT* dst = out_ptr + i * size;
+            memcpy(dst, src, size * sizeof(SrcT));
+          } else {
+            LOG(ERROR) << "Error!";
+          }
+        }
+      }
+    };
+
+    if (shard_by_prefix_dim) {
+      for (int i = 0; i < num_split; i++) {
+        TensorShape output_shape(input_shape);
+        output_shape.set_dim(split_dim, split_sizes_vec[i]);
+        OP_REQUIRES_OK(context,
+                       context->allocate_output(i, output_shape, &results[i]));
+      }
+      Shard(prefix_dim_size,
+            context->device()->tensorflow_cpu_worker_threads()->workers,
+            prefix_dim_size, split_dim_size * suffix_dim_size, range_prefix_dim_func);
+    } else if (use_parallelism_between_outputs) {
+      Shard(num_split,
+            context->device()->tensorflow_cpu_worker_threads()->workers,
+            num_split, input_element_count / num_split, range_output_func);
+    } else {
+      range_output_func(0, num_split);
+    }
+
   }
 
   template <typename IndexType>
