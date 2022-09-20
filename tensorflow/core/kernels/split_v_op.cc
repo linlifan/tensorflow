@@ -595,8 +595,12 @@ REGISTER_GPU_int32(int64_t);
 
 template <typename SrcT, typename DstT, typename Tlen>
 class FusedSplitVCastOp : public OpKernel {
+ private:
+  std::vector<DataType> dst_types_;
  public:
-  explicit FusedSplitVCastOp(OpKernelConstruction* c) : OpKernel(c) {}
+  explicit FusedSplitVCastOp(OpKernelConstruction* c) : OpKernel(c) {
+    OP_REQUIRES_OK(c, c->GetAttr("DstT", &dst_types_));
+  }
 
   void Compute(OpKernelContext* context) override {
     const int32_t num_split = context->num_outputs();
@@ -633,6 +637,10 @@ class FusedSplitVCastOp : public OpKernel {
         context, num_split > 0,
         errors::InvalidArgument(
             "Number of ways to split should be > 0, but got ", num_split));
+
+    OP_REQUIRES(context, dst_types_.size() == num_split,
+                errors::InvalidArgument("Split num does not match Dst type num."));
+
 
     OP_REQUIRES(
         context, 0 <= split_dim && split_dim < input.dims(),
@@ -710,18 +718,28 @@ class FusedSplitVCastOp : public OpKernel {
       for (int i = start; i < limit; i++) {
         TensorShape output_shape(input_shape);
         output_shape.set_dim(split_dim, split_sizes_vec[i]);
-        Tensor* casted_result = nullptr;
+        Tensor* result = nullptr;
         OP_REQUIRES_OK(context,
-                       context->allocate_output(i, output_shape, &casted_result));
-        DstT* out_ptr = casted_result->template flat<DstT>().data();
+                       context->allocate_output(i, output_shape, &result));
         int size = split_sizes_vec[i] * suffix_dim_size;
         for (int j = 0; j < prefix_dim_size; j++) {
           const SrcT* src = input_ptr + j * split_dim_size * suffix_dim_size + split_start_points[i];
-          DstT* dst = out_ptr + j * size;
-          Eigen::TensorMap<const Eigen::Tensor<SrcT, 1>> src_tensor(src, size);
-          Eigen::TensorMap<Eigen::Tensor<DstT, 1>> dst_tensor(dst, size);
+          if (dst_types_[i] == DataTypeToEnum<DstT>::value) {
+            // dst_type == DstT, need to cast from SrcT to DstT
+            DstT* out_ptr = result->template flat<DstT>().data();
+            DstT* dst = out_ptr + j * size;
+            Eigen::TensorMap<const Eigen::Tensor<SrcT, 1>> src_tensor(src, size);
+            Eigen::TensorMap<Eigen::Tensor<DstT, 1>> dst_tensor(dst, size);
 
-          dst_tensor = src_tensor.template cast<DstT>();
+            dst_tensor = src_tensor.template cast<DstT>();
+          } else if (dst_types_[i] == DataTypeToEnum<SrcT>::value) {
+            // dst_type == SrcT, no cast
+            SrcT* out_ptr = result->template flat<SrcT>().data();
+            SrcT* dst = out_ptr + j * size;
+            memcpy(dst, src, size * sizeof(SrcT));
+          } else {
+            LOG(ERROR) << "Error!";
+          }
         }
       }
     };
@@ -756,11 +774,10 @@ class FusedSplitVCastOp : public OpKernel {
 };
 
 #define REGISTER_SPLIT_CAST(src_type, dst_type, len_type)           \
-  REGISTER_KERNEL_BUILDER(Name("_FusedSplitVCast")                   \
+  REGISTER_KERNEL_BUILDER(Name("_FusedSplitVCast")                  \
                               .Device(DEVICE_CPU)                   \
                               .TypeConstraint<len_type>("Tlen")     \
                               .TypeConstraint<src_type>("SrcT")     \
-                              .TypeConstraint<dst_type>("DstT")     \
                               .HostMemory("size_splits")            \
                               .HostMemory("split_dim"),             \
                           FusedSplitVCastOp<src_type, dst_type, len_type>);

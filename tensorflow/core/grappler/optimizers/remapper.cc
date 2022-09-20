@@ -1771,20 +1771,27 @@ bool FindFusedSplitVCast(const RemapperContext& ctx, int node_index) {
   int num_split;
   if (!TryGetNodeAttr(*node_def, "num_split", &num_split)) return false;
 
+  int num_cast = 0;
+  // find all cast outputs that can be fused
   for (int i = 0; i < num_split; i++) {
-      const auto out = node_view->GetRegularFanout(i);
+    const auto out = node_view->GetRegularFanout(i);
 
-      // every output must be one Cast
-      if (out.size() != 1) return false;
-      const auto* out_node_def = out[0].node_view()->node();
-      if (!IsCast(*out_node_def)) return false;
+    // every output must be one Cast
+    if (out.size() != 1) continue;
+    const auto* out_node_def = out[0].node_view()->node();
+    if (!IsCast(*out_node_def)) continue;
 
-      // cast dst dtype must be bfloat16/float
-      DataType t_dtype = GetDataTypeFromAttr(*out_node_def, "DstT");
-      if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) return false;
+    // cast dst dtype must be bfloat16/float
+    DataType t_dtype = GetDataTypeFromAttr(*out_node_def, "DstT");
+    if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) continue;
+
+    num_cast++;
   }
 
-  return true;
+  LOG(INFO) << "Number of casts that can be fused: " << num_cast;
+
+  const int kMinCastNum = 1;
+  return num_cast >= kMinCastNum;
 }
 
 bool FindFusedBatchMatMul(RemapperContext* ctx, int node_index,
@@ -2906,39 +2913,28 @@ Status AddFusedSplitVCastNode(RemapperContext* ctx,
                               std::vector<bool>* nodes_to_delete) {
   const auto* node_view = ctx->graph_view.GetNode(node_idx);
   const auto* split_v = node_view->node();
-  const auto* cast = node_view->GetRegularFanout(0)[0].node_view()->node();
-
-  NodeDef fused_op;
-  fused_op.set_name(split_v->name());
-  fused_op.set_device(split_v->device());
-  fused_op.add_input(split_v->input(0));
-  fused_op.add_input(split_v->input(1));
-  fused_op.add_input(split_v->input(2));
-  fused_op.set_op("_FusedSplitVCast");
-
-  auto* attr = fused_op.mutable_attr();
   auto& src_attr0 = split_v->attr();
-  auto& src_attr1 = cast->attr();
-  (*attr)["num_split"] = src_attr0.at("num_split");
-  (*attr)["Tlen"] = src_attr0.at("Tlen");
-  (*attr)["SrcT"] = src_attr1.at("SrcT");
-  (*attr)["DstT"] = src_attr1.at("DstT");
-
-  utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
-  Status status;
-  mutation->AddNode(std::move(fused_op), &status);
-  TF_RETURN_IF_ERROR(status);
-  TF_RETURN_IF_ERROR(mutation->Apply());
-
-  (*invalidated_nodes)[node_idx] = true;
 
   int num_split;
   TryGetNodeAttr(*split_v, "num_split", &num_split);
 
+  DataType t = GetDataTypeFromAttr(*split_v, "T");
+  std::vector<DataType> dst_types(num_split, t);
+
   for (int i = 0; i < num_split; i++) {
-    auto out = node_view->GetRegularFanout(i)[0];
-    const auto* cast = out.node_view()->node();
-    int idx = out.node_view()->node_index();
+    const auto out = node_view->GetRegularFanout(i);
+
+    // every output must be one Cast
+    if (out.size() != 1) continue;
+    const auto* cast = out[0].node_view()->node();
+    if (!IsCast(*cast)) continue;
+
+    // cast dst dtype must be bfloat16/float
+    DataType t_dtype = GetDataTypeFromAttr(*cast, "DstT");
+    if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) continue;
+
+    dst_types[i] = t_dtype;
+    int idx = out[0].node_view()->node_index();
 
     // Turn cast node into Identity node.
     NodeDef identity_op;
@@ -2955,10 +2951,31 @@ Status AddFusedSplitVCastNode(RemapperContext* ctx,
     TF_RETURN_IF_ERROR(mutation->Apply());
 
     (*invalidated_nodes)[idx] = true;
+
   }
 
-  LOG(INFO) << "fused splitv + cast";
+  NodeDef fused_op;
+  fused_op.set_name(split_v->name());
+  fused_op.set_device(split_v->device());
+  fused_op.add_input(split_v->input(0));
+  fused_op.add_input(split_v->input(1));
+  fused_op.add_input(split_v->input(2));
+  fused_op.set_op("_FusedSplitVCast");
 
+  auto* attr = fused_op.mutable_attr();
+  (*attr)["Tlen"] = src_attr0.at("Tlen");
+  (*attr)["SrcT"] = src_attr0.at("T");
+  AddNodeAttr("DstT", dst_types, &fused_op);
+
+  utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
+  Status status;
+  mutation->AddNode(std::move(fused_op), &status);
+  TF_RETURN_IF_ERROR(status);
+  TF_RETURN_IF_ERROR(mutation->Apply());
+
+  (*invalidated_nodes)[node_idx] = true;
+
+  LOG(INFO) << "Fuse SplitV with Cast";
   return Status::OK();
 }
 
