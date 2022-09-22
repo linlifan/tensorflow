@@ -617,7 +617,7 @@ class MklReluGradOpBase : public OpKernel {
         dnn_shape_diff_src.SetMklTensor(false);
         tf_shape_diff_src = MklGetInput(context, diff_src_index).shape();
         AllocateOutputSetMklShape(context, diff_src_index, &diff_src_tensor,
-                                  tf_shape_diff_src, dnn_shape_diff_src);
+                                  tf_shape_diff_src, dnn_shape_diff_src, native_fmt);
         return;
       }
 
