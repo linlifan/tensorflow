@@ -29,6 +29,7 @@ _DNNL_RUNTIME_OMP = {
     "#cmakedefine DNNL_WITH_SYCL": "#undef DNNL_WITH_SYCL",
     "#cmakedefine DNNL_WITH_LEVEL_ZERO": "#undef DNNL_WITH_LEVEL_ZERO",
     "#cmakedefine DNNL_SYCL_CUDA": "#undef DNNL_SYCL_CUDA",
+    "#cmakedefine DNNL_SYCL_HIP": "#undef DNNL_SYCL_HIP",
     "#cmakedefine DNNL_ENABLE_STACK_CHECKER": "#undef DNNL_ENABLE_STACK_CHECKER",
     "#cmakedefine DNNL_EXPERIMENTAL": "#undef DNNL_EXPERIMENTAL",
     "#cmakedefine01 BUILD_TRAINING": "#define BUILD_TRAINING 1",
@@ -75,6 +76,7 @@ _DNNL_RUNTIME_THREADPOOL = {
     "#cmakedefine DNNL_WITH_SYCL": "#undef DNNL_WITH_SYCL",
     "#cmakedefine DNNL_WITH_LEVEL_ZERO": "#undef DNNL_WITH_LEVEL_ZERO",
     "#cmakedefine DNNL_SYCL_CUDA": "#undef DNNL_SYCL_CUDA",
+    "#cmakedefine DNNL_SYCL_HIP": "#undef DNNL_SYCL_HIP",
     "#cmakedefine DNNL_ENABLE_STACK_CHECKER": "#undef DNNL_ENABLE_STACK_CHECKER",
     "#cmakedefine DNNL_EXPERIMENTAL": "#undef DNNL_EXPERIMENTAL",
     "#cmakedefine01 BUILD_TRAINING": "#define BUILD_TRAINING 1",
@@ -136,8 +138,8 @@ template_rule(
     out = "include/oneapi/dnnl/dnnl_version.h",
     substitutions = {
         "@DNNL_VERSION_MAJOR@": "2",
-        "@DNNL_VERSION_MINOR@": "6",
-        "@DNNL_VERSION_PATCH@": "2",
+        "@DNNL_VERSION_MINOR@": "7",
+        "@DNNL_VERSION_PATCH@": "0",
         "@DNNL_VERSION_HASH@": "N/A",
     },
 )
