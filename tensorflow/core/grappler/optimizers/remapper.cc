@@ -1756,6 +1756,36 @@ bool FindTensorToHashBucket(const RemapperContext& ctx, int node_index,
   return true;
 }
 
+bool FindFusedCastSplitV(const RemapperContext& ctx, int node_index) {
+  // Node must be a SplitV.
+  const auto* node_view = ctx.graph_view.GetNode(node_index);
+  const auto* node_def = node_view->node();
+  if (!IsSplitV(*node_def) || HasControlFaninOrFanout(*node_view)) {
+    return false;
+  }
+
+  // dtype must be bfloat16/float
+  DataType t_dtype = GetDataTypeFromAttr(*node_def, "T");
+  if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) return false;
+
+  // Input must be a Cast
+  if (node_view->NumRegularFanins() < 1) return false;
+  const auto fanin = node_view->GetRegularFanin(0);
+  const auto* fanin_node_view = fanin.node_view();
+  const auto* fanin_node_def = fanin_node_view->node();
+  bool is_cast = IsCast(*fanin_node_def);
+  if (!IsCast(*fanin_node_def) || HasControlFaninOrFanout(*fanin_node_view) ||
+      !HasAtMostOneFanoutAtPort0(*fanin_node_view) ||
+      IsInPreserveSet(ctx, fanin_node_def))
+    return false;
+
+  // Cast src dtype must be bfloat16/float
+  DataType src_dtype = GetDataTypeFromAttr(*fanin_node_def, "SrcT");
+  if (src_dtype != DT_BFLOAT16 && src_dtype != DT_FLOAT) return false;
+
+  return true;
+}
+
 bool FindFusedSplitVCast(const RemapperContext& ctx, int node_index) {
   // Node must be a SplitV.
   const auto* node_view = ctx.graph_view.GetNode(node_index);
@@ -2907,13 +2937,58 @@ Status AddTensorToHashBucketNode(RemapperContext* ctx,
   return Status::OK();
 }
 
+Status AddFusedCastSplitVNode(RemapperContext* ctx,
+                              const int node_idx,
+                              std::vector<bool>* invalidated_nodes,
+                              std::vector<bool>* nodes_to_delete) {
+  const auto* node_view = ctx->graph_view.GetNode(node_idx);
+  const auto* split_v = node_view->node();
+  auto& src_attr = split_v->attr();
+
+  const auto* cast_view = node_view->GetRegularFanin(0).node_view();
+  const auto* cast = cast_view->node();
+  const int cast_idx = cast_view->node_index();
+  auto& cast_attr = cast->attr();
+
+  int num_split;
+  TryGetNodeAttr(*split_v, "num_split", &num_split);
+
+  DataType t = GetDataTypeFromAttr(*split_v, "T");
+  std::vector<DataType> dst_types(num_split, t);
+
+  NodeDef fused_op;
+  fused_op.set_name(split_v->name());
+  fused_op.set_device(split_v->device());
+  fused_op.add_input(cast->input(0));
+  fused_op.add_input(split_v->input(1));
+  fused_op.add_input(split_v->input(2));
+  fused_op.set_op("_FusedSplitVCast");
+
+  auto* attr = fused_op.mutable_attr();
+  (*attr)["Tlen"] = src_attr.at("Tlen");
+  (*attr)["SrcT"] = cast_attr.at("SrcT");
+  AddNodeAttr("DstT", dst_types, &fused_op);
+
+  utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
+  Status status;
+  mutation->AddNode(std::move(fused_op), &status);
+  TF_RETURN_IF_ERROR(status);
+  TF_RETURN_IF_ERROR(mutation->Apply());
+
+  (*invalidated_nodes)[node_idx] = true;
+  (*nodes_to_delete)[cast_idx] = true;
+
+  LOG(INFO) << "Fuse Cast with SplitV";
+  return Status::OK();
+}
+
 Status AddFusedSplitVCastNode(RemapperContext* ctx,
                               const int node_idx,
                               std::vector<bool>* invalidated_nodes,
                               std::vector<bool>* nodes_to_delete) {
   const auto* node_view = ctx->graph_view.GetNode(node_idx);
   const auto* split_v = node_view->node();
-  auto& src_attr0 = split_v->attr();
+  auto& src_attr = split_v->attr();
 
   int num_split;
   TryGetNodeAttr(*split_v, "num_split", &num_split);
@@ -2963,8 +3038,8 @@ Status AddFusedSplitVCastNode(RemapperContext* ctx,
   fused_op.set_op("_FusedSplitVCast");
 
   auto* attr = fused_op.mutable_attr();
-  (*attr)["Tlen"] = src_attr0.at("Tlen");
-  (*attr)["SrcT"] = src_attr0.at("T");
+  (*attr)["Tlen"] = src_attr.at("Tlen");
+  (*attr)["SrcT"] = src_attr.at("T");
   AddNodeAttr("DstT", dst_types, &fused_op);
 
   utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
@@ -3512,6 +3587,13 @@ Status Remapper::Optimize(Cluster* cluster, const GrapplerItem& item,
     FusedBatchNorm fused_batch_norm;
     if (FindFusedBatchNorm(ctx, i, &fused_batch_norm)) {
       TF_RETURN_IF_ERROR(AddBatchNormNodes(&ctx, fused_batch_norm));
+      continue;
+    }
+
+    // Remap Cast+SplitV into the _FusedSplitVCast.
+    if (FindFusedCastSplitV(ctx, i)) {
+      TF_RETURN_IF_ERROR(AddFusedCastSplitVNode(&ctx, i,
+                         &invalidated_nodes, &nodes_to_delete));
       continue;
     }
 
