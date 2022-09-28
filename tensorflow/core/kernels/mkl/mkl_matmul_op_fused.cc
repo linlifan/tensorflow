@@ -266,7 +266,7 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
       }
       std::shared_ptr<stream> cpu_stream;
       auto st = ExecuteSingleThreadedGemm(batch, channel, k, sizeof(T));
-      MklDnnThreadPool eigen_tp(ctx, st ? 1 : -1);
+      MklDnnThreadPool eigen_tp(ctx, st ? 1 : getOneDnnThreadNum()/*-1*/);
       cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
 
       UserScratchPad<unsigned char> scratch_pad;

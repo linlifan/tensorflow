@@ -941,7 +941,7 @@ void dnnl_gemm(char transa, char transb, int64_t m, int64_t n, int64_t k,
   // Execute matmul primitive.
   auto st = ExecuteSingleThreadedGemm(m, n, k, sizeof(T));
   std::shared_ptr<stream> cpu_stream;
-  MklDnnThreadPool eigen_tp(ctx, st ? 1 : -1);
+  MklDnnThreadPool eigen_tp(ctx, st ? 1 : getOneDnnThreadNum() /*-1*/);
   cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
   matmul_prim->Execute(cpu_stream, a, b, c, scratch_pad.Get());
 }

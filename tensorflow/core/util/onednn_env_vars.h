@@ -21,6 +21,7 @@ namespace tensorflow {
 bool AreWeightsFrozen();
 bool UseSystemAlloc();
 bool useCacheWeiFormat();
+int  getOneDnnThreadNum();
 }  // namespace tensorflow
 #endif  // INTEL_MKL
 #endif  // TENSORFLOW_CORE_UTIL_ONEDNN_ENV_VARS_H_

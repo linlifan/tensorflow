@@ -52,5 +52,15 @@ bool useCacheWeiFormat() {
   return use_cache_weights;
 }
 
+int getOneDnnThreadNum() {
+  static int64_t thread_num = -1;
+  static absl::once_flag once;
+  absl::call_once(once, [&] {
+    TF_CHECK_OK(ReadInt64FromEnvVar("TF_ONEDNN_THREAD_NUM",
+                                   /*default_value*/ -1, &thread_num));
+  });
+  return static_cast<int>(thread_num);
+}
+
 }  // namespace tensorflow
 #endif  // INTEL_MKL
