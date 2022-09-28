@@ -530,6 +530,27 @@ REGISTER_OP("ConcatV2")
     .Attr("Tidx: {int32, int64} = DT_INT32")
     .SetShapeFn(shape_inference::ConcatV2Shape);
 
+REGISTER_OP("_FusedCastConcat")
+    .Input("values: N * SrcT")
+    .Input("concat_dim: int32")
+    .Output("output: DstT")
+    .Attr("N: int >= 2")
+    .Attr("SrcT: {float, bfloat16}")
+    .Attr("DstT: {bfloat16, float}")
+    .SetShapeFn([](InferenceContext* c) {
+      return shape_inference::ConcatShape(c, c->num_inputs() - 1);
+    });
+
+REGISTER_OP("_FusedCastConcatV2")
+    .Input("values: N * SrcT")
+    .Input("axis: Tidx")
+    .Output("output: DstT")
+    .Attr("N: int >= 2")
+    .Attr("SrcT: {float, bfloat16}")
+    .Attr("DstT: {bfloat16, float}")
+    .Attr("Tidx: {int32, int64} = DT_INT64")
+    .SetShapeFn(shape_inference::ConcatV2Shape);
+
 // TODO(vivek.v.rane@intel.com): Prefix the op names with underscore if the ops
 // are not to be made user-accessible.
 #ifdef INTEL_MKL

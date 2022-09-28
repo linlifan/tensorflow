@@ -1756,6 +1756,35 @@ bool FindTensorToHashBucket(const RemapperContext& ctx, int node_index,
   return true;
 }
 
+bool FindFusedCastConcat(const RemapperContext& ctx, int node_index) {
+  const auto* node_view = ctx.graph_view.GetNode(node_index);
+  const auto* node_def = node_view->node();
+  // grep Concat nodes
+  if (!IsConcat(*node_def) || HasControlFaninOrFanout(*node_view)) {
+    return false;
+  }
+
+  // Concat with dtype must be bfloat16 / float
+  DataType t_dtype = GetDataTypeFromAttr(*node_def, "T");
+  if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) return false;
+
+  // Get all regular inputs
+  int num_input = node_view->NumRegularFanins();
+  for (int i = 0; i < num_input; i++) {
+      const auto& in = node_view->GetRegularFanin(i);
+      const auto* in_node_def = in.node_view()->node();
+      // axis
+      if (IsConstant(*in_node_def)) continue;
+      // every input must be a Cast
+      if (!IsCast(*in_node_def)) return false;
+      // cast dst dtype must be bfloat16 / float
+      DataType t_dtype = GetDataTypeFromAttr(*in_node_def, "DstT");
+      if (t_dtype != DT_BFLOAT16 && t_dtype != DT_FLOAT) return false;
+  }
+
+  return true;
+}
+
 bool FindFusedBatchMatMul(RemapperContext* ctx, int node_index,
                           std::map<string, int>* matched_nodes_map,
                           std::set<int>* remove_node_indices) {
@@ -2869,6 +2898,49 @@ Status AddTensorToHashBucketNode(RemapperContext* ctx,
   return Status::OK();
 }
 
+Status AddFusedCastConcatV2Node(RemapperContext* ctx,
+                              const int node_idx,
+                              std::vector<bool>* invalidated_nodes,
+                              std::vector<bool>* nodes_to_delete) {
+  const auto* node_view = ctx->graph_view.GetNode(node_idx);
+  const auto* concat = node_view->node();
+  const auto* cast = node_view->GetRegularFanin(0).node_view()->node();
+  int num_concat = node_view->NumRegularFanins();
+
+  NodeDef fused_op;
+  fused_op.set_name(concat->name());
+  fused_op.set_device(concat->device());
+  for (int i = 0; i < num_concat; i++) {
+    const auto* per_in = node_view->GetRegularFanin(i).node_view()->node();
+    int idx = node_view->GetRegularFanin(i).node_view()->node_index();
+    if (IsCast(*per_in)) {
+      fused_op.add_input(per_in->input(0));
+      (*invalidated_nodes)[idx] = true;
+    } else {
+      fused_op.add_input(concat->input(i));
+    }
+  }
+  fused_op.set_op("_FusedCastConcatV2");
+
+  auto* attr = fused_op.mutable_attr();
+  auto& src_attr = concat->attr();
+  auto& src_attr1 = cast->attr();
+  SetAttrValue(num_concat - 1, &(*attr)["N"]);
+  (*attr)["SrcT"] = src_attr1.at("SrcT");
+  (*attr)["DstT"] = src_attr1.at("DstT");
+  (*attr)["Tidx"] = src_attr.at("Tidx");
+
+  utils::Mutation* mutation = ctx->graph_view.GetMutationBuilder();
+  Status status;
+  mutation->AddNode(std::move(fused_op), &status);
+  TF_RETURN_IF_ERROR(status);
+  TF_RETURN_IF_ERROR(mutation->Apply());
+
+  (*invalidated_nodes)[node_idx] = true;
+
+  return Status::OK();
+}
+
 Status AddFusedBatchMatMul(RemapperContext* ctx,
                            const std::map<string, int>& matched_nodes_map,
                            const std::set<int>& remove_node_indices,
@@ -3402,6 +3474,14 @@ Status Remapper::Optimize(Cluster* cluster, const GrapplerItem& item,
     FusedBatchNorm fused_batch_norm;
     if (FindFusedBatchNorm(ctx, i, &fused_batch_norm)) {
       TF_RETURN_IF_ERROR(AddBatchNormNodes(&ctx, fused_batch_norm));
+      continue;
+    }
+
+    // Remap xCast+1Concat into _FusedCastConcat.
+    const char* env_p = std::getenv("TF_ENABLE_FUSEDCASTCONCAT");
+    if ((env_p != NULL && env_p[0] == '1') && FindFusedCastConcat(ctx, i)) {
+      TF_RETURN_IF_ERROR(AddFusedCastConcatV2Node(&ctx, i,
+                         &invalidated_nodes, &nodes_to_delete));
       continue;
     }
   }

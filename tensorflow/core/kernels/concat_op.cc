@@ -28,6 +28,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/concat_lib.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/work_sharder.h"
 
 namespace tensorflow {
 
@@ -325,5 +326,275 @@ REGISTER_KERNEL_BUILDER(Name("ConcatOffset")
                             .HostMemory("shape")
                             .HostMemory("offset"),
                         ConcatOffsetOp);
+
+template <typename T>
+int64_t EstimateBytesPerElement(
+    const std::vector<std::unique_ptr<typename TTypes<T, 2>::ConstMatrix>>&
+        inputs) {
+  return sizeof(T);
+}
+
+// EstimateBytesPerElement for strings estimates the total bytes involved in
+// concatenating the strings in the "inputs" matrices (higher-level code
+// reshapes all the inputs to matrices), by sampling the lengths of the actual
+// strings in the various tensors.
+template <>
+int64_t EstimateBytesPerElement<tstring>(
+    const std::vector<
+        std::unique_ptr<typename TTypes<tstring, 2>::ConstMatrix>>& inputs) {
+  // randomly sample a few input strings to get a sense of the average size
+  // of each element
+  int num_samples = 0;
+  int64_t num_bytes_in_samples = 0;
+  for (const auto& input : inputs) {
+    const auto dim0 = input->dimension(0);
+    const auto dim1 = input->dimension(1);
+    const auto zero = dim0 - dim0;  // Make type match
+    if (dim0 > 0 && dim1 > 0) {
+      for (auto i : {zero, dim0 / 2, dim0 - 1}) {
+        for (auto j : {zero, dim1 / 2, dim1 - 1}) {
+          num_bytes_in_samples += (*input)(i, j).size();
+          num_samples++;
+        }
+      }
+    }
+  }
+  // We don't use sizeof(std::string) as the overhead, since that would
+  // overestimate the memory touched for copying a string.
+  int64_t string_overhead = sizeof(char*) + sizeof(size_t);
+  return string_overhead +
+         ((num_samples > 0) ? (num_bytes_in_samples / num_samples) : 0);
+}
+
+template <typename Device, typename SrcT, typename DstT, AxisArgumentName AxisArgName>
+class FusedCastConcat : public OpKernel {
+ public:
+    typedef std::vector<std::unique_ptr<typename TTypes<SrcT, 2>::ConstMatrix>>
+      ConstMatrixVector;
+
+    explicit FusedCastConcat(OpKernelConstruction* c) : OpKernel(c),
+        axis_attribute_name_(AxisArgName == NAME_IS_AXIS ? "axis"
+                             : AxisArgName == NAME_IS_CONCAT_DIM
+                                 ? "concat_dim"
+                                 : "<invalid>") {
+      int unused;
+      OP_REQUIRES_OK(
+          c, InputRange(axis_attribute_name_, &axis_input_index_, &unused));
+      OP_REQUIRES_OK(c, InputRange("values", &values_input_start_index_,
+                                  &values_input_end_index_));
+
+      printf("_FusedCastConcat OP Construction!\n");
+  }
+
+  virtual ~FusedCastConcat() {}
+
+  void Compute(OpKernelContext* c) override {
+    const Tensor& concat_dim_tensor = c->input(axis_input_index_);
+
+    // TODO(rmlarsen): Disallow legacy use of length-1 vectors as scalars.
+    OP_REQUIRES(c,
+                (TensorShapeUtils::IsScalar(concat_dim_tensor.shape()) ||
+                 (TensorShapeUtils::IsVector(concat_dim_tensor.shape()) &&
+                  concat_dim_tensor.shape().dim_size(0) == 1)),
+                errors::InvalidArgument(
+                    axis_attribute_name_,
+                    " tensor should be a scalar integer, but got shape ",
+                    concat_dim_tensor.shape().DebugString()));
+    int64_t concat_dim;
+    // In case of ConcatV2, "axis" could be int32 or int64
+    if (AxisArgName == NAME_IS_AXIS) {
+      OP_REQUIRES(
+          c,
+          (concat_dim_tensor.dtype() == DT_INT32 ||
+           concat_dim_tensor.dtype() == DT_INT64),
+          errors::InvalidArgument(axis_attribute_name_,
+                                  " tensor should be int32 or int64, but got ",
+                                  DataTypeString(concat_dim_tensor.dtype())));
+    } else {
+      OP_REQUIRES(c, (concat_dim_tensor.dtype() == DT_INT32),
+                  errors::InvalidArgument(
+                      axis_attribute_name_, " tensor should be int32, but got ",
+                      DataTypeString(concat_dim_tensor.dtype())));
+    }
+    if (concat_dim_tensor.dtype() == DT_INT32) {
+      concat_dim =
+          internal::SubtleMustCopy(concat_dim_tensor.scalar<int32>()());
+    } else {
+      concat_dim =
+          internal::SubtleMustCopy(concat_dim_tensor.scalar<int64_t>()());
+    }
+
+    const int N = values_input_end_index_ - values_input_start_index_;
+    const Tensor& first_input = c->input(values_input_start_index_);
+    const int input_dims = first_input.dims();
+    const TensorShape& input_shape = first_input.shape();
+
+    int32_t axis = concat_dim < 0 ? concat_dim + input_dims : concat_dim;
+    // concat_dim==0 allows concatenating a list of scalars into a vector.
+    OP_REQUIRES(c, (0 <= axis && axis < input_dims) || concat_dim == 0,
+                errors::InvalidArgument(
+                    "ConcatOp : Expected concatenating dimensions in the range "
+                    "[",
+                    -input_dims, ", ", input_dims, "), but got ", concat_dim));
+    // Note that we reduce the concat of n-dimensional tensors into a two
+    // dimensional concat. Assuming the dimensions of any input/output
+    // tensor are {x0, x1,...,xn-1, y0, y1,...,ym-1}, where the concat is along
+    // the dimension indicated with size y0, we flatten it to {x, y}, where y =
+    // Prod_i(yi) and x = ((n > 0) ? Prod_i(xi) : 1).
+    ConstMatrixVector inputs_flat;
+    inputs_flat.reserve(N);
+    int64_t inputs_flat_dim0 = 1;
+    for (int d = 0; d < axis; ++d) {
+      inputs_flat_dim0 *= input_shape.dim_size(d);
+    }
+    int64_t output_concat_dim = 0;
+    for (int i = 0; i < N; ++i) {
+      const auto& in = c->input(values_input_start_index_ + i);
+      OP_REQUIRES(
+          c, in.dims() == input_dims,
+          errors::InvalidArgument(
+              "ConcatOp : Ranks of all input tensors should match: shape[0] = ",
+              input_shape.DebugString(), " vs. shape[", i,
+              "] = ", in.shape().DebugString()));
+      for (int j = 0; j < input_dims; ++j) {
+        if (j == axis) {
+          continue;
+        }
+        OP_REQUIRES(
+            c, in.dim_size(j) == input_shape.dim_size(j),
+            errors::InvalidArgument("ConcatOp : Dimension ", j,
+                                    " in both shapes must be equal: "
+                                    "shape[0] = ",
+                                    input_shape.DebugString(), " vs. shape[", i,
+                                    "] = ", in.shape().DebugString()));
+      }
+      if (in.NumElements() > 0) {
+        int64_t inputs_flat_dim1 = in.NumElements() / inputs_flat_dim0;
+        inputs_flat.emplace_back(new typename TTypes<SrcT, 2>::ConstMatrix(
+            in.template shaped<SrcT, 2>({inputs_flat_dim0, inputs_flat_dim1})));
+      }
+      // TODO(rmlarsen): Remove check once !allow_legacy_scalars()?
+      output_concat_dim += in.dims() > 0 ? in.dim_size(axis) : 1;
+    }
+
+    TensorShape output_shape(input_shape);
+    // TODO(rmlarsen): Remove rank 0 case once !allow_legacy_scalars()?
+    if (output_shape.dims() == 0) {
+      output_shape.AddDim(output_concat_dim);
+    } else {
+      output_shape.set_dim(axis, output_concat_dim);
+    }
+    Tensor* output = nullptr;
+    OP_REQUIRES_OK(c, c->allocate_output(0, output_shape, &output));
+    if (output->NumElements() > 0) {
+      int64_t output_dim1 = output->NumElements() / inputs_flat_dim0;
+      auto output_flat = output->shaped<DstT, 2>({inputs_flat_dim0, output_dim1});
+      // ConcatCPU<T>(c->device(), inputs_flat, &output_flat);
+
+      // Fused Cast-Concat in a Sharded mode.
+      auto worker_threads = c->device()->tensorflow_cpu_worker_threads();
+      int64_t cost_per_unit = EstimateBytesPerElement<SrcT>(inputs_flat);
+
+      size_t num_inputs = inputs_flat.size();
+      std::vector<ptrdiff_t> sizes;
+      sizes.reserve(N);
+      int64_t row_size = 0;
+      for (const auto& input : inputs_flat) {
+        sizes.push_back(input->dimension(1));
+        row_size += sizes.back();
+      }
+
+      auto work = [&](int64_t start, int64_t end) {
+        int64_t skipped_rows = start / row_size;
+        DstT* out = (&output_flat)->data() + skipped_rows * row_size;
+        DstT* out_start = (&output_flat)->data() + start;
+        DstT* out_end = (&output_flat)->data() + end;
+
+        // Handle partial row at start
+        if (out < out_start) {
+          for (size_t j = 0; j < num_inputs; ++j) {
+            ptrdiff_t size = sizes[j];
+            ptrdiff_t offset = out_start - out;
+            if (size <= offset) {
+              out += size;
+              continue;
+            }
+            const SrcT* inp = &(*inputs_flat[j])(skipped_rows, 0);
+            if (offset > 0) {
+              out += offset;
+              inp += offset;
+              size -= offset;
+            }
+            size = std::min(size, out_end - out);
+            if (size <= 0) break;
+            //copier.Copy(out, inp, j, size);
+            Eigen::TensorMap<const Eigen::Tensor<SrcT, 1>> src_tensor(inp, size);
+            Eigen::TensorMap<Eigen::Tensor<DstT, 1>> dst_tensor(out, size);
+            dst_tensor = src_tensor.template cast<DstT>();
+
+            out += size;
+          }
+          ++skipped_rows;
+        }
+        if (out == out_end) return;
+        CHECK(out >= out_start);
+        CHECK(out < out_end);
+
+        // Copy remaining data.
+        std::vector<const SrcT*> inp;
+        inp.reserve(num_inputs);
+        for (const auto& input : inputs_flat) {
+          inp.push_back(&(*input)(skipped_rows, 0));
+        }
+        const int64_t dim0 = (&output_flat)->dimension(0);
+        for (int64_t i = skipped_rows; i < dim0; ++i) {
+          for (int64_t j = 0; j < num_inputs; ++j) {
+            ptrdiff_t size = std::min(sizes[j], out_end - out);
+            //copier.Copy(out, inp[j], j, size);
+            Eigen::TensorMap<const Eigen::Tensor<SrcT, 1>> src_tensor(inp[j], size);
+            Eigen::TensorMap<Eigen::Tensor<DstT, 1>> dst_tensor(out, size);
+            dst_tensor = src_tensor.template cast<DstT>();
+
+            out += size;
+            inp[j] += size;
+            if (out == out_end) return;
+          }
+        }
+      };
+      Shard(worker_threads->num_threads, worker_threads->workers, (&output_flat)->size(),
+            cost_per_unit, work);
+    }
+  }
+
+ private:
+  const char* const axis_attribute_name_;
+  int axis_input_index_;
+  int values_input_start_index_;
+  int values_input_end_index_;
+};
+
+template <typename Device, typename SrcT, typename DstT>
+using FusedCastConcatOp = FusedCastConcat<Device, SrcT, DstT, NAME_IS_CONCAT_DIM>;
+template <typename Device, typename SrcT, typename DstT>
+using FusedCastConcatV2Op = FusedCastConcat<Device, SrcT, DstT, NAME_IS_AXIS>;
+
+#define REGISTER_FUSEDCASTCONCAT(SrcT, DstT)                            \
+  REGISTER_KERNEL_BUILDER(Name("_FusedCastConcat")                      \
+                              .Device(DEVICE_CPU)                       \
+                              .TypeConstraint<SrcT>("SrcT")             \
+                              .TypeConstraint<DstT>("DstT")             \
+                              .HostMemory("concat_dim"),                \
+                          FusedCastConcatOp<CPUDevice, SrcT, DstT>)     \
+  REGISTER_KERNEL_BUILDER(Name("_FusedCastConcatV2")                    \
+                              .Device(DEVICE_CPU)                       \
+                              .TypeConstraint<SrcT>("SrcT")             \
+                              .TypeConstraint<DstT>("DstT")             \
+                              .HostMemory("axis"),                      \
+                          FusedCastConcatV2Op<CPUDevice, SrcT, DstT>)
+
+REGISTER_FUSEDCASTCONCAT(float, bfloat16);
+REGISTER_FUSEDCASTCONCAT(bfloat16, float);
+
+#undef REGISTER_FUSEDCASTCONCAT
 
 }  // namespace tensorflow

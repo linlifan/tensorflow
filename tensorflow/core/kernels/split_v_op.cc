@@ -33,6 +33,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/util/work_sharder.h"
+#include "tensorflow/core/util/env_var.h"
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
 #include "tensorflow/core/kernels/gpu_device_array.h"
@@ -325,7 +326,8 @@ class SplitVOpCPUImpl {
     // is too small (<kMinimumInputSize);
     // 2. There is sufficient data on the 0th dimension to ensure parallelism;
     // 3. This method only supports non-zero split.
-    if ((input_element_count >= kMinimumInputSize) &&
+    const char* env_p = std::getenv("TF_PARALLEL_SPLIT");
+    if ((env_p != NULL && env_p[0] == '1') && (input_element_count >= kMinimumInputSize) &&
         input_reshaped.dimension(0) > kMinimumDim0Size && split_dim) {
       // Each thread processes the same amount of data, and then copies data
       // to all output tensors .
