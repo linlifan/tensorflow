@@ -23,6 +23,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/fill_functor.h"
 #include "tensorflow/core/kernels/mkl/mkl_matmul_ops_common.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/util/onednn_env_vars.h"
 
 namespace tensorflow {
 
@@ -122,6 +123,15 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
         src_dims, weight_dims, bias_dims, dst_dims, src_format,
         (this->is_weight_const_) ? memory::format_tag::any : weight_format,
         memory::format_tag::nc, this->is_weight_const_);
+
+    if (useCacheWeiFormat() && !this->IsWeightCacheEmpty(ctx)) {
+       matmul_params =  MklDnnMatMulFwdParams(
+        src_dims, weight_dims, bias_dims, dst_dims,
+        this->GetCachedWeightMd(),
+        src_format,
+        memory::format_tag::nc);
+    }
+
     // Extend the basic parameters for data types and fusions.
     ExtendMklDnnMatMulFwdParams(ctx, matmul_params);
 #ifdef DNNL_AARCH64_USE_ACL

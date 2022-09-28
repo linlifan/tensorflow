@@ -73,7 +73,9 @@ struct MklDnnMatMulFwdParams {
     std::vector<float> param;
   };
   std::vector<PostOpParam> post_op_params;
-
+  bool use_cached_weight_md;
+  memory::desc cached_weight_md;
+ 
   MklDnnMatMulFwdParams(
       memory::dims src_dims, memory::dims weight_dims, memory::dims bias_dims,
       memory::dims dst_dims,
@@ -88,7 +90,27 @@ struct MklDnnMatMulFwdParams {
         src_format(src_format),
         weight_format(weight_format),
         dst_format(dst_format),
-        const_weight(const_weight) {}
+        const_weight(const_weight) {
+            use_cached_weight_md = false;
+        }
+
+  MklDnnMatMulFwdParams(
+      memory::dims src_dims, memory::dims weight_dims, memory::dims bias_dims,
+      memory::dims dst_dims,  memory::desc cached_weight_md,
+      memory::format_tag src_format = memory::format_tag::any,
+      memory::format_tag dst_format = memory::format_tag::any,
+      bool const_weight = false)
+      : src_dims(src_dims),
+        weight_dims(weight_dims),
+        bias_dims(bias_dims),
+        dst_dims(dst_dims),
+        src_format(src_format),
+        weight_format(weight_format),
+        dst_format(dst_format),
+        const_weight(const_weight),
+        cached_weight_md(cached_weight_md) {
+            use_cached_weight_md = true;
+        }
 };
 
 // With quantization, input, weight, bias, and output can have different types.
@@ -210,11 +232,13 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     context_.src_md.reset(new memory::desc({matmul_fwd_params.src_dims},
                                            MklDnnType<Tinput>(),
                                            matmul_fwd_params.src_format));
-
+    if (matmul_fwd_params.use_cached_weight_md){
+        context_.weight_md.reset(new memory::desc(matmul_fwd_params.cached_weight_md.data));
+    } else {
     context_.weight_md.reset(new memory::desc({matmul_fwd_params.weight_dims},
                                               MklDnnType<Tweight>(),
                                               matmul_fwd_params.weight_format));
-
+    }
     context_.dst_md.reset(new memory::desc({matmul_fwd_params.dst_dims},
                                            MklDnnType<Toutput>(),
                                            matmul_fwd_params.dst_format));
@@ -557,6 +581,12 @@ class MklDnnMatMulOpBase : public OpKernel {
       }
     }
     return nullptr;
+  }
+  
+  memory::desc GetCachedWeightMd() TF_LOCKS_EXCLUDED(mu_){
+     tf_shared_lock lock(mu_);
+     memory::desc weight_md = *(static_cast<memory::desc*>(weight_oi_md_.data()));
+     return weight_md;
   }
 
   engine cpu_engine_ = engine(engine::kind::cpu, 0);

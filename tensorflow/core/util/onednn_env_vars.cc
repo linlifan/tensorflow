@@ -42,5 +42,15 @@ bool UseSystemAlloc() {
   return use_sys_alloc;
 }
 
+bool useCacheWeiFormat() {
+  static bool use_cache_weights = false;
+  static absl::once_flag once;
+  absl::call_once(once, [&] {
+    TF_CHECK_OK(ReadBoolFromEnvVar("TF_ONEDNN_USE_CACHE_WEI_FORMAT",
+                                   /*default_value*/ false, &use_cache_weights));
+  });
+  return use_cache_weights;
+}
+
 }  // namespace tensorflow
 #endif  // INTEL_MKL
