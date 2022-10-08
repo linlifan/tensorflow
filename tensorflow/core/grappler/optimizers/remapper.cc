@@ -3356,6 +3356,17 @@ bool RequiresInferredShapes(const RemapperContext& ctx, int node_index) {
          is_batch_norm_fusion_candidate() ||
          is_batch_norm_grad_fusion_candidate();
 }
+
+bool enable_splitv_cast_fusion() {
+  bool value;
+  Status status = ReadBoolFromEnvVar("TF_FUSE_SPLITV_CAST",
+                                     /*default_value=*/false, &value);
+  if (!status.ok()) {
+    LOG(ERROR) << status;
+  }
+  return value;
+}
+
 }  // namespace
 
 Status Remapper::Optimize(Cluster* cluster, const GrapplerItem& item,
@@ -3591,14 +3602,14 @@ Status Remapper::Optimize(Cluster* cluster, const GrapplerItem& item,
     }
 
     // Remap Cast+SplitV into the _FusedSplitVCast.
-    if (FindFusedCastSplitV(ctx, i)) {
+    if (enable_splitv_cast_fusion() && FindFusedCastSplitV(ctx, i)) {
       TF_RETURN_IF_ERROR(AddFusedCastSplitVNode(&ctx, i,
                          &invalidated_nodes, &nodes_to_delete));
       continue;
     }
 
     // Remap SplitV+Cast into the _FusedSplitVCast.
-    if (FindFusedSplitVCast(ctx, i)) {
+    if (enable_splitv_cast_fusion() && FindFusedSplitVCast(ctx, i)) {
       TF_RETURN_IF_ERROR(AddFusedSplitVCastNode(&ctx, i,
                          &invalidated_nodes, &nodes_to_delete));
       continue;
