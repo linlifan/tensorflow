@@ -54,6 +54,38 @@ inline bool ExecuteSingleThreadedGemm(int m, int n, int k, int bytes) {
   return mul_size < l2_heur;
 }
 
+inline int EstimateThreadsToUse(int m, int n, int k, int load_bytes, int max_threads) {
+  // We do this calculation to estimate the cost of a dense kernel.
+  // This func returns the proper number of threads in [1:max_threads] to use 
+  // with the given m/n/k sizes and cost per coefficient.
+
+  // Cost of memory fetches from L2 cache. 
+  // 64 is typical cache line size.
+  // 11 is L2 cache latency for Haswell.
+  // 14 is L2 cache latency for SKL/CLX/ICX.
+  // 16 is L2 cache latency for SPR.
+  int l2_cache_latency = ((port::TestCPUFeature(port::CPUFeature::AMX_TILE) ||
+                           port::TestCPUFeature(port::CPUFeature::AMX_INT8) ||
+                           port::TestCPUFeature(port::CPUFeature::AMX_BF16)) ? 16 : 14);
+  const double kL2LoadCycles = 1.0 / 64 * l2_cache_latency;
+  const double kStoreCycles = 1.0 / 64 * l2_cache_latency;
+  // Scaling from Eigen compute cost to device cycles.
+  static const int kDeviceCyclesPerComputeCycle = 1;
+  // Costs in device cycles.
+  static const int kStartupCycles = 100000;
+  static const int kPerThreadCycles = 100000;
+  // 1 is AVX512 FMA latency for SKL/CLX/ICX/SPR per 16 elements.
+  const double compute_cycles = 1.0 * 1 / 16;
+  int64 l2_load_elements = m * k + k * n; 
+  int64 store_elements = m * n;
+  int64 compute_elements = (int64) m * k * n;
+  double totalCost = l2_load_elements * kL2LoadCycles * load_bytes + 
+                    store_elements * kStoreCycles * load_bytes + 
+                    compute_elements * kDeviceCyclesPerComputeCycle * compute_cycles;
+  int64 threads = (totalCost - kStartupCycles) / kPerThreadCycles + 0.9;
+  return std::fmin(max_threads, std::fmax(1, threads));
+}
+
 // This structure aggregates multiple inputs to MklDnnMatMul* methods.
 struct MklDnnMatMulFwdParams {
   memory::dims src_dims;

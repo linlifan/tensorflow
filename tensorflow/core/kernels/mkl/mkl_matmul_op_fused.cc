@@ -265,8 +265,21 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
         }
       }
       std::shared_ptr<stream> cpu_stream;
-      auto st = ExecuteSingleThreadedGemm(batch, channel, k, sizeof(T));
-      MklDnnThreadPool eigen_tp(ctx, st ? 1 : getOneDnnThreadNum()/*-1*/);
+      MklDnnThreadPool eigen_tp;
+
+      const char* env_p = std::getenv("TF_ENABLE_COST_MODEL");
+      if (env_p != NULL && env_p[0] == '1') {
+        // To estimate the proper number of threads to use
+        // when given more available threads than you may need
+        int current_thr_num = ctx->device()
+                            ->tensorflow_cpu_worker_threads()
+                            ->workers->AsEigenThreadPool()->NumThreads();
+        int estimate_thr_num = EstimateThreadsToUse(batch, channel, k, sizeof(T), current_thr_num);
+        eigen_tp = MklDnnThreadPool(ctx, estimate_thr_num);
+      } else {
+        auto st = ExecuteSingleThreadedGemm(batch, channel, k, sizeof(T));
+        eigen_tp = MklDnnThreadPool(ctx, st ? 1 : getOneDnnThreadNum()/*-1*/);
+      }
       cpu_stream.reset(CreateStream(&eigen_tp, matmul_prim->GetEngine()));
 
       UserScratchPad<unsigned char> scratch_pad;
