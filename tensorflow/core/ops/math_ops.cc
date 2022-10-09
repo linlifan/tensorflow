@@ -206,6 +206,15 @@ Cast x of type SrcT to y of DstT.
 _HostCast requires its input and produces its output in host memory.
 )doc");
 
+// #ifdef INTEL_MKL
+// REGISTER_OP("_MklNativeMul")
+//     .Input("input_a: T")
+//     .Input("input_b: T")
+//     .Output("output: T")
+//     .Attr("T: {float, bfloat16}")
+//     .SetShapeFn(shape_inference::BroadcastBinaryOpShapeFn);
+// #endif  // INTEL_MKL
+
 // --------------------------------------------------------------------------
 
 REGISTER_OP("Abs")

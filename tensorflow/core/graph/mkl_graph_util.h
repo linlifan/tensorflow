@@ -194,6 +194,8 @@ static inline void BF16UnsupportedWarning() {
 // change or layout change pass; false otherwise
 static inline bool IsMklOp(const string& op_name, DataType T,
                            bool is_native_op) {
+  VLOG(1) << "hebi-dbg: enter IsMklOp: op_name(" << op_name << "), datatype("<<T<<"), is_native_op("<<is_native_op<<")\n";
+
   string label = is_native_op ? kMklNameChangeOpLabelPattern
                               : kMklLayoutDependentOpLabelPattern;
   string registered_kernels_key = op_name + label + std::to_string(T);
@@ -201,6 +203,7 @@ static inline bool IsMklOp(const string& op_name, DataType T,
       new absl::flat_hash_map<string, bool>();
   auto kernel_element = registered_kernels_map->find(registered_kernels_key);
   bool kernel_registered = false;
+  VLOG(1) << "hebi-dbg: kernel_registered 1 to (" << kernel_registered <<")\n";
 
   if (kernel_element == registered_kernels_map->end()) {
     string registered_kernels = KernelsRegisteredForOp(op_name);
@@ -216,6 +219,7 @@ static inline bool IsMklOp(const string& op_name, DataType T,
         registered_kernels.find(kMklQuantizedOpLabelPattern) != string::npos) {
       // Restrict quantized ops to QUINT8, QINT8 and DT_QINT32
       kernel_registered = (T == DT_QUINT8 || T == DT_QINT8 || T == DT_QINT32);
+      VLOG(1) << "hebi-dbg: kernel_registered 2 to (" << kernel_registered <<")\n";
     }
 
     // Now we just construct a search string to match what we are looking for.
@@ -227,6 +231,7 @@ static inline bool IsMklOp(const string& op_name, DataType T,
                               ? (T == DT_COMPLEX128 || T == DT_COMPLEX64 ||
                                  T == DT_DOUBLE || T == DT_FLOAT)
                               : T == DT_FLOAT;
+      VLOG(1) << "hebi-dbg: kernel_registered 3 to (" << kernel_registered <<")\n";
       if (!kernel_registered) {
         if (T == DT_BFLOAT16) {
           if (IsBF16SupportedByOneDNNOnThisCPU()) {
@@ -236,6 +241,7 @@ static inline bool IsMklOp(const string& op_name, DataType T,
             // fall back to Eigen implementation otherwise.
             BF16UnsupportedWarning();
             kernel_registered = false;
+            VLOG(1) << "hebi-dbg: kernel_registered 4 to (" << kernel_registered <<")\n";
           }
         }
       }
@@ -245,6 +251,7 @@ static inline bool IsMklOp(const string& op_name, DataType T,
   } else {
     // Kernel is visited at least once. Return stored registration result.
     kernel_registered = kernel_element->second;
+    VLOG(1) << "hebi-dbg: kernel_registered 5 to (" << kernel_registered <<")\n";
   }
   return kernel_registered;
 }

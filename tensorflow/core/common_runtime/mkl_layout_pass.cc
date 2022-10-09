@@ -526,6 +526,9 @@ class MklLayoutRewritePass : public GraphOptimizationPass {
     rinfo_.push_back({csinfo_.matmul,
                       mkl_op_registry::GetMklOpName(csinfo_.matmul),
                       CopyAttrsAll, MatMulRewrite, kRewriteForOpNameChange});
+    // rinfo_.push_back({csinfo_.matmul,
+    //                   mkl_op_registry::GetMklOpName(csinfo_.matmul),
+    //                   CopyAttrsAll, RewriteBinaryMul, kRewriteForOpNameChange});                  
     rinfo_.push_back({csinfo_.leakyrelu,
                       mkl_op_registry::GetMklOpName(csinfo_.leakyrelu),
                       CopyAttrsAll, LeakyReluRewrite, GetRewriteCause()});
@@ -547,9 +550,14 @@ class MklLayoutRewritePass : public GraphOptimizationPass {
     rinfo_.push_back(
         {csinfo_.maximum, mkl_op_registry::GetMklOpName(csinfo_.maximum),
          CopyAttrsAll, RewriteIfAtleastOneMklInput, GetRewriteCause()});
+    // rinfo_.push_back({csinfo_.mul, mkl_op_registry::GetMklOpName(csinfo_.mul),
+    //                   CopyAttrsAll, RewriteBinaryMul,
+    //                   GetRewriteCause()});
+
     rinfo_.push_back({csinfo_.mul, mkl_op_registry::GetMklOpName(csinfo_.mul),
-                      CopyAttrsAll, RewriteIfAtleastOneMklInput,
+                      CopyAttrsAll, RewriteBinaryMul,
                       GetRewriteCause()});
+
     rinfo_.push_back({csinfo_.pad_with_conv2d,
                       native_fmt ? csinfo_.mkl_native_pad_with_conv2d
                                  : csinfo_.mkl_pad_with_conv2d,
@@ -1452,7 +1460,19 @@ class MklLayoutRewritePass : public GraphOptimizationPass {
     return false;
   }
 
+
+  static bool RewriteBinaryMul(const Node* n) {
+    const char* env_p = std::getenv("TF_ENABLE_MKLNATIVEMUL");
+    VLOG(1) <<"hebi-dbg: RewriteBinaryMul: n = (" << n->type_string() << "), RewriteIfAtleastOneMklInput(n) = (" << RewriteIfAtleastOneMklInput(n) << "), env_p != NULL (" << int(env_p!=NULL) << ")";
+    if (env_p != NULL ) {
+      VLOG(1) << "env_p[0] = (" << env_p[0] <<")";
+    }
+    VLOG(1) << "hebi-dbg: end RewriteBinaryMul";
+    return RewriteIfAtleastOneMklInput(n) && env_p != NULL && env_p[0] == '1';
+  }
+
   static bool MatMulRewrite(const Node* n) {
+    VLOG(1) << "hebi-dbg: rewrite matmul enter\n";
     DataType T;
     TF_CHECK_OK(GetNodeAttr(n->def(), "T", &T));
     if ((T == DT_FLOAT) || (T == DT_BFLOAT16)) {
@@ -3662,12 +3682,15 @@ MklLayoutRewritePass::CheckForQuantizedNodeRewrite(const Node* n) const {
 
 const MklLayoutRewritePass::RewriteInfo*
 MklLayoutRewritePass::CheckForNodeRewrite(const Node* n) const {
+  VLOG(1) << "hebi-dbg:enter checking n->type_string() (" << n->type_string() << ") \n";
   DCHECK(n);
 
   // QuantizedOps may have attributes other than "T", so decoupled the check
   // with a function, CheckForQuantizedNodeRewrite(const Node*).
   const RewriteInfo* ri = CheckForQuantizedNodeRewrite(n);
   if (ri != nullptr) return ri;
+
+  VLOG(1) << "hebi-dbg: CheckForNodeRewrite 1\n";
 
   // First check if node along with its type is supported by MKL layer.
   // We do not want to rewrite an op into Mkl op if types are not supported.
@@ -3677,6 +3700,7 @@ MklLayoutRewritePass::CheckForNodeRewrite(const Node* n) const {
   if (!TryGetNodeAttr(n->def(), "T", &T)) {
     return nullptr;
   }
+  VLOG(1) << "hebi-dbg: CheckForNodeRewrite 2\n";
 
   // We make an exception for Conv2DGrad and MaxPool related ops as
   // the corresponding MKL ops currently do not support the case
@@ -3697,6 +3721,8 @@ MklLayoutRewritePass::CheckForNodeRewrite(const Node* n) const {
     if (padding == "EXPLICIT") return nullptr;
   }
 
+  VLOG(1) << "hebi-dbg: CheckForNodeRewrite 3\n";
+
   // We make an exception for __MklDummyConv2DWithBias,
   // __MklConv2DBackpropFilterWithBias, and __MklDummyPadWithConv2D since their
   // names do not match Mkl node names.
@@ -3714,11 +3740,15 @@ MklLayoutRewritePass::CheckForNodeRewrite(const Node* n) const {
     return nullptr;
   }
 
+  VLOG(1) << "hebi-dbg: CheckForNodeRewrite 4\n";
+
   // We now check if rewrite rule applies for this op. If rewrite rule passes
   // for this op, then we rewrite it to Mkl op.
   // Find matching RewriteInfo and then check that rewrite rule applies.
   for (auto ri = rinfo_.cbegin(); ri != rinfo_.cend(); ++ri) {
+    VLOG(1) << "hebi-dbg: checking n->type_string() (" << n->type_string() << ") and (" << ri->name <<") \n";
     if (n->type_string().compare(ri->name) == 0 && ri->rewrite_rule(n)) {
+      VLOG(1) << "hebi-dbg: rewrite "<< n->type_string() << " successfully.";
       return &*ri;
     }
   }

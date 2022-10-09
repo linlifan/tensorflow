@@ -1828,6 +1828,14 @@ REGISTER_OP("_MklLayerNorm")
     .Attr("epsilon: float = 0.001")
     .SetShapeFn(shape_inference::UnchangedShape);
 
+
+REGISTER_OP("_MklNativeMul")
+    .Input("input_a: T")
+    .Input("input_b: T")
+    .Output("output: T")
+    .Attr("T: {float, bfloat16}")
+    .SetShapeFn(shape_inference::BroadcastBinaryOpShapeFn);
+
 }  // namespace tensorflow
 
 #endif  // INTEL_MKL

@@ -512,3 +512,21 @@ tf_cc_test_mkl(
         "//tensorflow/core/kernels/mkl:mkl_matmul_op",
     ] + MKL_TEST_DEPS,
 )
+
+tf_mkl_kernel_library(
+    name = "mkl_mul_op",
+    srcs = [
+        "mkl_mul_op.cc",
+    ],
+    deps = MKL_DEPS,
+)
+
+tf_cc_test_mkl(
+    name = "mkl_mul_op_test",
+    size = "small",
+    srcs = ["mkl_mul_op_test.cc"],
+    deps = [
+        ":mkl_mul_op",
+        "//tensorflow/core/kernels:cwise_op", 
+    ] + MKL_TEST_DEPS,
+)
