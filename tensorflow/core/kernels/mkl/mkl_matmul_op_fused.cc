@@ -73,7 +73,7 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     // FusedMatMul has 3 inputs: src, weights, bias
     const Tensor& src_tensor = ctx->input(this->kInputIndexSrc);
     const Tensor& weight_tensor = ctx->input(this->kInputIndexWeight);
-    const Tensor& bias_tensor = ctx->input(this->kInputIndexWeight); //dummy
+    const Tensor& bias_tensor = Tensor(); //ctx->input(this->kInputIndexWeight); //dummy
     if (has_bias_) {
     const Tensor& bias_tensor = MklGetInput(ctx, this->kInputIndexBias);
     }
