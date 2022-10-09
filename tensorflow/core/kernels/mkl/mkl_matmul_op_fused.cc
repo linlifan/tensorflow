@@ -45,15 +45,26 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     OP_REQUIRES(ctx, fused_ops_.size() <= 2,
                 errors::InvalidArgument(
                     "MklFusedMatMul must have 2 post-arguments at most."));
-    OP_REQUIRES(
+    
+    if (fused_ops_[0] == "BiasAdd")
+    {
+       has_bias_ = true;
+    }
+    /*OP_REQUIRES(
         ctx, fused_ops_[0] == "BiasAdd",
         errors::InvalidArgument(
             "The 1st post-argument of MklFusedMatMul must be BiasAdd."));
+    */
+
     if (fused_ops_.size() > 1 && fused_ops_[1] == "Add") fuse_add_ = true;
     OP_REQUIRES(
         ctx, transpose_a_ == false,
         errors::InvalidArgument("In[0] of MklMatMul can't be transposed."));
+    
     if (fused_ops_.size() == 2 && fused_ops_[1] == "LeakyRelu") {
+      OP_REQUIRES_OK(ctx, ctx->GetAttr("leakyrelu_alpha", &leakyrelu_alpha));
+    }
+    else if (fused_ops_.size() == 1 && fused_ops_[0] ==  "LeakyRelu") {
       OP_REQUIRES_OK(ctx, ctx->GetAttr("leakyrelu_alpha", &leakyrelu_alpha));
     }
   }
@@ -62,7 +73,10 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     // FusedMatMul has 3 inputs: src, weights, bias
     const Tensor& src_tensor = ctx->input(this->kInputIndexSrc);
     const Tensor& weight_tensor = ctx->input(this->kInputIndexWeight);
+    const Tensor& bias_tensor = ctx->input(this->kInputIndexWeight); //dummy
+    if (has_bias_) {
     const Tensor& bias_tensor = MklGetInput(ctx, this->kInputIndexBias);
+    }
 
     MklDnnShape src_mkl_shape;
     MklDnnShape weight_mkl_shape;
@@ -81,8 +95,11 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
                 errors::InvalidArgument("In[0] is not a matrix"));
     OP_REQUIRES(ctx, TensorShapeUtils::IsMatrix(weight_tf_shape),
                 errors::InvalidArgument("In[1] is not a matrix"));
+    
+    if (has_bias_) {
     OP_REQUIRES(ctx, TensorShapeUtils::IsVector(bias_tensor.shape()),
                 errors::InvalidArgument("Biases must be 1D"));
+    }
 
     // Expression: [batch, k] * [k, channel] + [channel] = [batch, channel]
     //
@@ -99,11 +116,12 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
         errors::InvalidArgument(
             "Matrix size-incompatible: In[0]: ", src_tf_shape.DebugString(),
             ", In[1]: ", weight_tf_shape.DebugString()));
+    if (has_bias_) {        
     OP_REQUIRES(ctx, bias_tensor.shape().dim_size(0) == channel,
                 errors::InvalidArgument(
                     "Must provide as many biases as the channel size: ",
                     bias_tensor.shape().DebugString(), " vs. ", channel));
-
+    }
     // For inputs s[batch, k], w[k, channel] and b[channel], the primitive
     // dims should be described like this:
     //   s[batch, k] * w^T[channel, k] + b[channel] = dst[batch, channel]
@@ -111,7 +129,12 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
     memory::dims src_dims = memory::dims({batch, k});
     // Reverse the weights dims from [k, channel] to [channel, k].
     memory::dims weight_dims = memory::dims({channel, k});
-    memory::dims bias_dims = memory::dims({channel});
+    
+    memory::dims bias_dims = memory::dims({0});
+    if (has_bias_) {
+        bias_dims = memory::dims({channel});
+    }
+
     memory::dims dst_dims = memory::dims({batch, channel});
     memory::format_tag src_format = memory::format_tag::nc;
     memory::format_tag weight_format =
@@ -208,7 +231,10 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
       // Prepare the input and output for primitive.
       T* src_data = const_cast<T*>(src_tensor.flat<T>().data());
       T* weight_data = const_cast<T*>(weight_tensor.flat<T>().data());
-      T* bias_data = const_cast<T*>(bias_tensor.flat<T>().data());
+      T* bias_data = nullptr;
+      if (has_bias_) {
+          bias_data = const_cast<T*>(bias_tensor.flat<T>().data());
+      }
       T* dst_data = const_cast<T*>(dst_tensor->flat<T>().data());
 
       // Reorder input if necessary.
@@ -307,6 +333,7 @@ class MklFusedMatMulOp : public MklDnnMatMulOpBase<T, T> {
   }
 
  private:
+  bool has_bias_ = false;
   bool fuse_add_ = false;
   bool transpose_a_;
   bool transpose_b_;

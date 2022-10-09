@@ -218,10 +218,15 @@ class MklDnnMatMulFwdPrimitive : public MklPrimitive {
     context_.dst_md.reset(new memory::desc({matmul_fwd_params.dst_dims},
                                            MklDnnType<Toutput>(),
                                            matmul_fwd_params.dst_format));
-
+    
+    if (matmul_fwd_params.bias_dims[0] == 0) {
+        context_.bias_md.reset(new memory::desc());
+    } 
+    else {
     context_.bias_md.reset(new memory::desc({matmul_fwd_params.bias_dims},
                                             MklDnnType<Tbias>(),
                                             memory::format_tag::any));
+     }
     // Create an inner-product.
     context_.fwd_desc.reset(new inner_product_forward::desc(
         matmul_fwd_params.const_weight ? prop_kind::forward_inference
