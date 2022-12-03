@@ -726,6 +726,15 @@ REGISTER_OP("SplitV")
       return Status::OK();
     });
 
+REGISTER_OP("_FusedSplitVCast")
+    .Input("value: SrcT")
+    .Input("size_splits: Tlen")
+    .Input("split_dim: int32")
+    .Output("output: DstT")
+    .Attr("Tlen: {int32, int64} = DT_INT64")
+    .Attr("SrcT: type")
+    .Attr("DstT: list(type)");
+
 // --------------------------------------------------------------------------
 REGISTER_OP("Const")
     .Output("output: dtype")

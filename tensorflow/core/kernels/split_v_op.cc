@@ -595,4 +595,252 @@ REGISTER_GPU_int32(int64_t);
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
+template <typename SrcT, typename DstT, typename Tlen>
+class FusedSplitVCastOp : public OpKernel {
+ private:
+  std::vector<DataType> dst_types_;
+  static constexpr uint64 kMinimumInputSize = 4096 * 512;
+  static constexpr uint64 kMinimumPrefixDimSize = 8;
+  static constexpr uint64 kMinimumSplitNum = 4;
+
+ public:
+  explicit FusedSplitVCastOp(OpKernelConstruction* c) : OpKernel(c) {
+    OP_REQUIRES_OK(c, c->GetAttr("DstT", &dst_types_));
+  }
+
+  void Compute(OpKernelContext* context) override {
+    const int32_t num_split = context->num_outputs();
+    const Tensor& input = context->input(0);
+    const TensorShape& input_shape = input.shape();
+    const Tensor& split_tensor = context->input(1);
+    const Tensor& split_dim_tensor = context->input(2);
+
+    OP_REQUIRES(context, split_dim_tensor.NumElements() == 1,
+                errors::InvalidArgument("split_dim_tensor must have "
+                                        "exactly one element."));
+
+    const int32_t split_dim_orig = split_dim_tensor.flat<int32>()(0);
+    const int32_t split_dim =
+        split_dim_orig < 0 ? split_dim_orig + input.dims() : split_dim_orig;
+
+    OP_REQUIRES(
+        context,
+        split_tensor.dims() == 1 && split_tensor.NumElements() == num_split,
+        errors::InvalidArgument("size of the split_tensor must be 1-D and have "
+                                "the same elements as outputs got ",
+                                split_tensor.dims(), " -D and ",
+                                split_tensor.NumElements(), " elements"));
+
+    auto split_sizes_d = split_tensor.vec<Tlen>();
+
+    std::vector<Tlen> split_sizes_vec;
+    split_sizes_vec.resize(split_sizes_d.size());
+
+    std::copy(split_sizes_d.data(), split_sizes_d.data() + split_sizes_d.size(),
+              split_sizes_vec.begin());
+
+    OP_REQUIRES(
+        context, num_split > 0,
+        errors::InvalidArgument(
+            "Number of ways to split should be > 0, but got ", num_split));
+
+    OP_REQUIRES(context, dst_types_.size() == num_split,
+                errors::InvalidArgument("Split num does not match Dst type num."));
+
+
+    OP_REQUIRES(
+        context, 0 <= split_dim && split_dim < input.dims(),
+        errors::InvalidArgument("-input rank(-", input.dims(),
+                                ") <= split_dim < input rank (", input.dims(),
+                                "), but got ", split_dim_orig));
+
+    Tlen input_size_split_dim = input_shape.dim_size(split_dim);
+
+    // Determine sizes of output, in case of a -1 input value
+    int neg_one_dim = -1;
+    Tlen determined_size = 0;
+    for (int d = 0; d < split_sizes_vec.size(); ++d) {
+      Tlen size = split_sizes_vec[d];
+
+      if (size == -1) {
+        OP_REQUIRES(context, neg_one_dim == -1,
+                    errors::InvalidArgument("There can only be one -1 in the "
+                                            "input."));
+        neg_one_dim = d;
+      } else {
+        determined_size += size;
+      }
+    }
+
+    OP_REQUIRES(
+        context,
+        (neg_one_dim == -1 && determined_size == input_size_split_dim) ||
+            (neg_one_dim >= 0 && determined_size <= input_size_split_dim),
+        errors::InvalidArgument("Determined shape must either match "
+                                "input shape along split_dim exactly if "
+                                "fully specified, or be less than the size of "
+                                "the input along split_dim if not fully "
+                                "specified.  Got: ",
+                                determined_size));
+
+    if (neg_one_dim >= 0) {
+      split_sizes_vec[neg_one_dim] = input_size_split_dim - determined_size;
+    }
+
+    for (int i = 0; i < split_sizes_vec.size(); ++i) {
+      const Tlen& split_size = split_sizes_vec[i];
+      OP_REQUIRES(context, split_size >= Tlen(0),
+                  errors::InvalidArgument("Split size at index ", i,
+                                          " must be >= 0. Got: ", split_size));
+    }
+
+    // Android also uses int32 indexing, so check here also.
+    OP_REQUIRES(
+        context,
+        FastBoundsCheck(input.NumElements(),
+                        std::numeric_limits<Eigen::DenseIndex>::max()),
+        errors::InvalidArgument("Split requires input size < ",
+                                std::numeric_limits<Eigen::DenseIndex>::max()));
+
+    Eigen::DenseIndex prefix_dim_size;
+    Eigen::DenseIndex split_dim_size;
+    Eigen::DenseIndex suffix_dim_size;
+
+    std::tie(prefix_dim_size, split_dim_size, suffix_dim_size) =
+        SetDims<Eigen::DenseIndex>(input_shape, split_dim);
+    std::vector<int64_t> split_start_points(num_split);
+    for (int i = 0; i < num_split; ++i) {
+      if (i == 0) {
+        split_start_points[i] = 0;
+      } else {
+        split_start_points[i] =
+            split_start_points[i - 1] + split_sizes_vec[i - 1];
+      }
+    }
+
+    const SrcT* input_ptr = input.template flat<SrcT>().data();
+    std::vector<Tensor*> results(num_split, nullptr);
+
+    const auto num_threads =
+        context->device()->tensorflow_cpu_worker_threads()->num_threads;
+    const auto input_element_count = input_shape.num_elements();
+    const bool shard_by_prefix_dim = input_element_count >= kMinimumInputSize &&
+        prefix_dim_size > kMinimumPrefixDimSize;
+    const bool use_parallelism_between_outputs =
+        (num_split >= kMinimumSplitNum &&
+         input_element_count >= std::min(num_threads, num_split) * 4096);
+
+    auto range_output_func = [&](int64_t start, int64_t limit) {
+      for (int i = start; i < limit; i++) {
+        TensorShape output_shape(input_shape);
+        output_shape.set_dim(split_dim, split_sizes_vec[i]);
+        Tensor* result = nullptr;
+        OP_REQUIRES_OK(context,
+                       context->allocate_output(i, output_shape, &result));
+        int size = split_sizes_vec[i] * suffix_dim_size;
+        for (int j = 0; j < prefix_dim_size; j++) {
+          const SrcT* src = input_ptr + j * split_dim_size * suffix_dim_size + split_start_points[i];
+          if (dst_types_[i] == DataTypeToEnum<DstT>::value) {
+            // dst_type == DstT, need to cast from SrcT to DstT
+            DstT* out_ptr = result->template flat<DstT>().data();
+            DstT* dst = out_ptr + j * size;
+            Eigen::TensorMap<const Eigen::Tensor<SrcT, 1>> src_tensor(src, size);
+            Eigen::TensorMap<Eigen::Tensor<DstT, 1>> dst_tensor(dst, size);
+
+            dst_tensor = src_tensor.template cast<DstT>();
+          } else if (dst_types_[i] == DataTypeToEnum<SrcT>::value) {
+            // dst_type == SrcT, no cast
+            SrcT* out_ptr = result->template flat<SrcT>().data();
+            SrcT* dst = out_ptr + j * size;
+            memcpy(dst, src, size * sizeof(SrcT));
+          } else {
+            LOG(ERROR) << "Error!";
+          }
+        }
+      }
+    };
+
+    auto range_prefix_dim_func = [&](int64_t start, int64_t limit) {
+      for (int i = start; i < limit; i++) {
+        for (int j = 0; j < num_split; j++) {
+          const SrcT* src = input_ptr + i * split_dim_size * suffix_dim_size + split_start_points[j];
+          int size = split_sizes_vec[j] * suffix_dim_size;
+          if (dst_types_[j] == DataTypeToEnum<DstT>::value) {
+            // dst_type == DstT, need to cast from SrcT to DstT
+            DstT* out_ptr = results[j]->template flat<DstT>().data();
+            DstT* dst = out_ptr + i * size;
+            Eigen::TensorMap<const Eigen::Tensor<SrcT, 1>> src_tensor(src, size);
+            Eigen::TensorMap<Eigen::Tensor<DstT, 1>> dst_tensor(dst, size);
+
+            dst_tensor = src_tensor.template cast<DstT>();
+          } else if (dst_types_[j] == DataTypeToEnum<SrcT>::value) {
+            // dst_type == SrcT, no cast
+            SrcT* out_ptr = results[j]->template flat<SrcT>().data();
+            SrcT* dst = out_ptr + i * size;
+            memcpy(dst, src, size * sizeof(SrcT));
+          } else {
+            LOG(ERROR) << "Error!";
+          }
+        }
+      }
+    };
+
+    if (shard_by_prefix_dim) {
+      for (int i = 0; i < num_split; i++) {
+        TensorShape output_shape(input_shape);
+        output_shape.set_dim(split_dim, split_sizes_vec[i]);
+        OP_REQUIRES_OK(context,
+                       context->allocate_output(i, output_shape, &results[i]));
+      }
+      Shard(prefix_dim_size,
+            context->device()->tensorflow_cpu_worker_threads()->workers,
+            prefix_dim_size, split_dim_size * suffix_dim_size, range_prefix_dim_func);
+    } else if (use_parallelism_between_outputs) {
+      Shard(num_split,
+            context->device()->tensorflow_cpu_worker_threads()->workers,
+            num_split, input_element_count / num_split, range_output_func);
+    } else {
+      range_output_func(0, num_split);
+    }
+
+  }
+
+  template <typename IndexType>
+  std::tuple<IndexType, IndexType, IndexType> SetDims(
+      const TensorShape& input_shape, const int32_t split_dim) const {
+    static_assert(std::is_integral<IndexType>::value,
+                  "IndexType must be an integer type");
+    int32_t prefix_dim_size = 1;
+    for (int i = 0; i < split_dim; ++i) {
+      prefix_dim_size *= input_shape.dim_size(i);
+    }
+
+    // Caller must ensure that dim_size and suffix_dim_size are <
+    // std::numeric_limits<IndexType>::max()
+    IndexType split_dim_size =
+        static_cast<IndexType>(input_shape.dim_size(split_dim));
+
+    IndexType suffix_dim_size = 1;
+    for (int i = split_dim + 1; i < input_shape.dims(); ++i) {
+      suffix_dim_size *= static_cast<IndexType>(input_shape.dim_size(i));
+    }
+    return std::make_tuple(prefix_dim_size, split_dim_size, suffix_dim_size);
+  }
+};
+
+#define REGISTER_SPLIT_CAST(src_type, dst_type, len_type)           \
+  REGISTER_KERNEL_BUILDER(Name("_FusedSplitVCast")                  \
+                              .Device(DEVICE_CPU)                   \
+                              .TypeConstraint<len_type>("Tlen")     \
+                              .TypeConstraint<src_type>("SrcT")     \
+                              .HostMemory("size_splits")            \
+                              .HostMemory("split_dim"),             \
+                          FusedSplitVCastOp<src_type, dst_type, len_type>);
+
+REGISTER_SPLIT_CAST(bfloat16, float, int32);
+REGISTER_SPLIT_CAST(bfloat16, float, int64_t);
+REGISTER_SPLIT_CAST(float, bfloat16, int32);
+REGISTER_SPLIT_CAST(float, bfloat16, int64_t);
+
+#undef REGISTER_SPLIT_CAST
 }  // end namespace tensorflow

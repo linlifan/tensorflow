@@ -16,7 +16,7 @@ using MS = std::chrono::duration<double, std::milli>;
 
 int main(int argc, char* argv[]) {
   if (argc < 5) {
-    printf("Usage: saved_model_inference PATH QPS BS RANGE [inter_op] [intra_op] [profile_flag]\n");
+    printf("Usage: saved_model_inference PATH QPS BS RANGE [inter_op] [intra_op] [enable auto mix] [profile_flag]\n");
     return 0;
   }
 
@@ -160,9 +160,9 @@ int main(int argc, char* argv[]) {
 
   int thread_num = 20;
   tensorflow::thread::ThreadPool pool(tensorflow::Env::Default(), "threadpool", thread_num);
-
+  int loop = 1000;
   Clock::time_point t = Clock::now();
-  for(int i = 0; i<5000; i++) {
+  for(int i = 0; i<loop; i++) {
     if (profile > 0) {
       if (i == QPS*1000) {
         printf("start profiler\n");
